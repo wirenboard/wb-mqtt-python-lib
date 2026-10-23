@@ -1,0 +1,57 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    # pylint resolves the imports against the same packages as on the controller
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: wirenboard/codestyle
+          path: codestyle.tmp
+          persist-credentials: false
+      - name: Install packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            python3-venv python3-asyncio-mqtt python3-pytest python3-pytest-asyncio
+      # Versions and config as runPythonChecks in Jenkins takes them from codestyle
+      - name: Install linters
+        run: |
+          python3 -m venv --system-site-packages /opt/lint
+          /opt/lint/bin/pip install -r codestyle.tmp/python/config/requirements.txt
+          cp codestyle.tmp/python/config/pyproject.toml pyproject.toml
+      - name: black
+        run: /opt/lint/bin/python -m black --check --diff wb_mqtt_lib tests
+      - name: isort
+        run: /opt/lint/bin/python -m isort --check --diff wb_mqtt_lib tests
+      - name: pylint
+        run: /opt/lint/bin/python -m pylint -j 0 wb_mqtt_lib tests
+
+  tests:
+    runs-on: ubuntu-latest
+    # Same Debian release and package versions as on the controller
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install packages
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            mosquitto python3-asyncio-mqtt python3-pytest python3-pytest-asyncio python3-pytest-timeout
+      - name: Run tests
+        run: python3 -m pytest -v
