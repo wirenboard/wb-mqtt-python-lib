@@ -67,8 +67,9 @@ class _Publication:  # pylint: disable=too-many-instance-attributes
     retain: bool
     # The mirror entry a retained publication carries. One whose entry is no longer the current one
     # of its topic is out of date, a newer change has a publication of its own further back in the queue.
-    entry: Optional[_MirrorEntry] = None
+    mirror_entry: Optional[_MirrorEntry] = None
     batch: Optional[_Batch] = None
+    # Queued by the replay after reconnect, skipped when a newer change overtook it
     replay: bool = False
     finished: bool = False
 
@@ -103,7 +104,8 @@ class _Session:  # pylint: disable=too-few-public-methods
     def __init__(self, connection: link.Connection) -> None:
         self.connection = connection
         self.loop = asyncio.get_running_loop()
-        self.outbox: deque[Optional[_Publication]] = deque()
+        self.queue: deque[Optional[_Publication]] = deque()
+        # Publications handed to the connection and waiting for PUBACK, at most link.SEND_WINDOW
         self.inflight = 0
         self.send_tasks: set[asyncio.Task] = set()
 
@@ -118,12 +120,17 @@ class Publisher:
         self._mirror: dict[str, _MirrorEntry] = {}
         # Send tasks of the session that ended, cancelled and not finished yet
         self._ended_session_tasks: list[asyncio.Task] = []
+        # _send_queued runs, a call from inside it returns at once
         self._sending_queued = False
         self._closing = False
 
     @property
     def mirror_size(self) -> int:
         return len(self._mirror)
+
+    # ------------------------------------------------------------
+    # Connection and closing
+    # ------------------------------------------------------------
 
     def mark_closing(self) -> None:
         """
@@ -148,10 +155,10 @@ class Publisher:
         session, self._session = self._session, None
         if session is None:
             return
-        for publication in session.outbox:
+        for publication in session.queue:
             if publication is not _BARRIER:
-                self._drop(publication)
-        session.outbox.clear()
+                self._end_unconfirmed(publication)
+        session.queue.clear()
         for task in session.send_tasks:
             task.cancel()
         self._ended_session_tasks = list(session.send_tasks)
@@ -160,19 +167,12 @@ class Publisher:
         """
         Wait until the send tasks of the session that ended are gone.
         """
-        ended, self._ended_session_tasks = self._ended_session_tasks, []
-        await asyncio.gather(*ended, return_exceptions=True)
+        ended_tasks, self._ended_session_tasks = self._ended_session_tasks, []
+        await asyncio.gather(*ended_tasks, return_exceptions=True)
 
-    def retained_under(self, topic: str) -> list[str]:
-        """
-        The topic and the topics under it that the own retained state publishes now.
-        """
-        prefix = f"{topic}/"
-        return [
-            mirrored
-            for mirrored, entry in self._mirror.items()
-            if entry.payload is not None and (mirrored == topic or mirrored.startswith(prefix))
-        ]
+    # ------------------------------------------------------------
+    # Publication
+    # ------------------------------------------------------------
 
     async def publish(  # pylint: disable=too-many-arguments
         self,
@@ -197,11 +197,12 @@ class Publisher:
 
         Raises:
             ValueError: the topic or the QoS is invalid.
-            TypeError: the payload is a bool or not str, bytes, int, float or None.
+            TypeError: the payload is a bool or not str, bytes, bytearray, int, float or None.
             BrokerDisconnectedError: an event while the link is down, or the link is lost or the broker
                 does not confirm it in link.ACK_TIMEOUT_S.
             ClientClosedError: the client closes before the broker confirmed the message.
         """
+        # Checks, and the payload in the form the mirror keeps
         if not isinstance(topic, topics.CheckedTopic):
             topics.check_topic(topic)
         link.check_qos(qos)
@@ -212,21 +213,27 @@ class Publisher:
         elif isinstance(payload, bytearray):
             # A buffer the service changes later must not change what goes out after reconnect
             payload = bytes(payload)
+
+        # State goes into the mirror and waits there without a link, an event needs the link
         session = self._session
-        entry = None
+        mirror_entry = None
         if retain:
-            entry = self._put_in_mirror(topic, payload, qos)
+            mirror_entry = self._put_in_mirror(topic, payload, qos)
             if session is None:
                 return
         elif session is None:
             raise BrokerDisconnectedError(f"broker is not connected, {topic} is not published")
-        if retain and not wait_for_puback and not session.outbox and session.inflight < link.SEND_WINDOW:
+
+        # Retained state with room in the window and an empty queue returns at once
+        if retain and not wait_for_puback and not session.queue and session.inflight < link.SEND_WINDOW:
             # The send task starts at once, the packet reaches paho before the call returns
-            session.outbox.append(_Publication(topic, payload, qos, retain, entry))
+            session.queue.append(_Publication(topic, payload, qos, retain, mirror_entry))
             self._send_queued(session)
             return
+
+        # Otherwise the call waits for the broker
         batch = _Batch(1)
-        session.outbox.append(_Publication(topic, payload, qos, retain, entry, batch))
+        session.queue.append(_Publication(topic, payload, qos, retain, mirror_entry, batch))
         self._send_queued(session)
         await asyncio.shield(batch.future)
 
@@ -253,6 +260,44 @@ class Publisher:
         """
         return self._queue_staged([(topic, None, stage) for topic, stage in staged])
 
+    # ------------------------------------------------------------
+    # Own retained state in the mirror
+    # ------------------------------------------------------------
+
+    def get_own_topics_under(self, topic: str) -> list[str]:
+        """
+        Topics the own retained state publishes now, the topic itself and those under it.
+        """
+        prefix = f"{topic}/"
+        return [
+            own_topic
+            for own_topic, mirror_entry in self._mirror.items()
+            if mirror_entry.payload is not None and (own_topic == topic or own_topic.startswith(prefix))
+        ]
+
+    def _put_in_mirror(self, topic: str, payload: link.Payload, qos: int, stage: int = 0) -> _MirrorEntry:
+        current_entry = self._mirror.get(topic)
+        if current_entry is None or current_entry.payload is None or payload is None:
+            # Appearing again and erasing go to the end. The replay keeps the order the state was built in,
+            # and erases in the stages the erasure was made in.
+            self._mirror.pop(topic, None)
+        mirror_entry = _MirrorEntry(payload, qos, stage)
+        self._mirror[topic] = mirror_entry
+        return mirror_entry
+
+    def _forget_confirmed_erasure(self, topic: str, mirror_entry: Optional[_MirrorEntry]) -> None:
+        # An erasure that reached the broker needs no replay. Keeping it would grow the mirror forever.
+        if (
+            mirror_entry is not None
+            and mirror_entry.payload is None
+            and self._mirror.get(topic) is mirror_entry
+        ):
+            del self._mirror[topic]
+
+    # ------------------------------------------------------------
+    # Queue of the session and sending
+    # ------------------------------------------------------------
+
     def _queue_staged(self, staged: Sequence[tuple[str, link.Payload, int]]) -> asyncio.Future:
         """
         Put retained messages into the mirror and the queue in the order given, QoS 1, with a barrier
@@ -260,15 +305,15 @@ class Publisher:
         """
         session = self._session
         batch = _Batch(len(staged) if session is not None else 0)
-        previous = None
+        previous_stage = None
         for topic, payload, stage in staged:
-            entry = self._put_in_mirror(topic, payload, 1, stage)
+            mirror_entry = self._put_in_mirror(topic, payload, 1, stage)
             if session is None:
                 continue
-            if previous is not None and stage != previous:
-                session.outbox.append(_BARRIER)
-            previous = stage
-            session.outbox.append(_Publication(topic, payload, 1, True, entry, batch))
+            if previous_stage is not None and stage != previous_stage:
+                session.queue.append(_BARRIER)
+            previous_stage = stage
+            session.queue.append(_Publication(topic, payload, 1, True, mirror_entry, batch))
         if session is not None:
             self._send_queued(session)
         return batch.future
@@ -280,15 +325,18 @@ class Publisher:
         A publication that a newer change overtakes before it goes out is skipped, that change has
         a publication of its own further back in the queue.
         """
-        stage = None
-        for topic, entry in self._mirror.items():
-            if entry.payload is None:
-                if stage is not None and entry.stage > stage:
-                    session.outbox.append(_BARRIER)
-                stage = entry.stage
+        erasure_stage = None
+        for topic, mirror_entry in self._mirror.items():
+            # A barrier where the stage of the erasures that go in a row grows
+            if mirror_entry.payload is None:
+                if erasure_stage is not None and mirror_entry.stage > erasure_stage:
+                    session.queue.append(_BARRIER)
+                erasure_stage = mirror_entry.stage
             else:
-                stage = None
-            session.outbox.append(_Publication(topic, entry.payload, entry.qos, True, entry, replay=True))
+                erasure_stage = None
+            session.queue.append(
+                _Publication(topic, mirror_entry.payload, mirror_entry.qos, True, mirror_entry, replay=True)
+            )
         self._send_queued(session)
 
     def _send_queued(self, session: _Session) -> None:
@@ -299,17 +347,20 @@ class Publisher:
             return
         self._sending_queued = True
         try:
-            outbox = session.outbox
-            while outbox:
-                publication = outbox[0]
+            queue = session.queue
+            while queue:
+                # A barrier lets the queue go on once everything before it is confirmed
+                publication = queue[0]
                 if publication is _BARRIER:
                     if session.inflight:
                         return
-                    outbox.popleft()
+                    queue.popleft()
                     continue
+
+                # A publication goes out while the window has room
                 if session.inflight >= link.SEND_WINDOW:
                     return
-                outbox.popleft()
+                queue.popleft()
                 session.inflight += 1
                 # Started at once, so the connection gets the publications in the order of the queue
                 task = asyncio.Task(self._send(session, publication), loop=session.loop, eager_start=True)
@@ -326,22 +377,26 @@ class Publisher:
         """
         try:
             while True:
-                if publication.replay and self._mirror.get(publication.topic) is not publication.entry:
+                # A replayed publication that a newer change overtook does not go out
+                if publication.replay and self._mirror.get(publication.topic) is not publication.mirror_entry:
                     return
+
                 try:
                     await session.connection.publish(
                         publication.topic, publication.payload, publication.qos, publication.retain
                     )
                 except link.LinkError as error:
+                    # An event fails, after mark_closing state fails too
                     if not publication.retain or self._closing:
-                        self._drop(publication, str(error))
+                        self._end_unconfirmed(publication, str(error))
                         return
                     # The caller stops waiting at once, as it does without a link
                     publication.finish()
+                    # State waits for the replay, unless the broker was only late and the change is current
                     if (
                         not isinstance(error, link.AckTimeout)
                         or session is not self._session
-                        or self._mirror.get(publication.topic) is not publication.entry
+                        or self._mirror.get(publication.topic) is not publication.mirror_entry
                     ):
                         logger.debug(
                             "Retained publish to %s left to the replay: %s", publication.topic, error
@@ -349,25 +404,27 @@ class Publisher:
                         return
                     logger.debug("Retained publish to %s goes again: %s", publication.topic, error)
                     continue
+
+                # Confirmed
                 if publication.retain:
-                    self._forget_confirmed_erasure(publication.topic, publication.entry)
+                    self._forget_confirmed_erasure(publication.topic, publication.mirror_entry)
                 return
         except asyncio.CancelledError:
             # The session ended
-            self._drop(publication)
+            self._end_unconfirmed(publication)
             raise
         except Exception:  # pylint: disable=broad-exception-caught
             # One broken publication must not stop the rest of the own state
             logger.exception("Own retained message on %s dropped", publication.topic)
-            if publication.retain and self._mirror.get(publication.topic) is publication.entry:
+            if publication.retain and self._mirror.get(publication.topic) is publication.mirror_entry:
                 del self._mirror[publication.topic]
-            self._drop(publication)
+            self._end_unconfirmed(publication)
         finally:
             publication.finish()
             session.inflight -= 1
             self._send_queued(session)
 
-    def _drop(self, publication: _Publication, reason: str = "the broker link is lost") -> None:
+    def _end_unconfirmed(self, publication: _Publication, reason: str = "the broker link is lost") -> None:
         """
         The broker did not confirm the publication in this session. State waits for the replay, an event
         fails. After mark_closing there is no replay, and everything fails.
@@ -378,18 +435,3 @@ class Publisher:
             publication.finish()
         else:
             publication.fail(BrokerDisconnectedError(f"{publication.topic} is not published: {reason}"))
-
-    def _put_in_mirror(self, topic: str, payload: link.Payload, qos: int, stage: int = 0) -> _MirrorEntry:
-        current = self._mirror.get(topic)
-        if current is None or current.payload is None or payload is None:
-            # Appearing again and erasing go to the end. The replay keeps the order the state was built in,
-            # and erases in the stages the erasure was made in.
-            self._mirror.pop(topic, None)
-        entry = _MirrorEntry(payload, qos, stage)
-        self._mirror[topic] = entry
-        return entry
-
-    def _forget_confirmed_erasure(self, topic: str, entry: Optional[_MirrorEntry]) -> None:
-        # An erasure that reached the broker needs no replay. Keeping it would grow the mirror forever.
-        if entry is not None and entry.payload is None and self._mirror.get(topic) is entry:
-            del self._mirror[topic]

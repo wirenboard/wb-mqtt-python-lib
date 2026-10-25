@@ -572,7 +572,9 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         meta subtopics for example.
         """
         listed = set(to_erase)
-        return to_erase + [topic for topic in self._publisher.retained_under(root) if topic not in listed]
+        return to_erase + [
+            topic for topic in self._publisher.get_own_topics_under(root) if topic not in listed
+        ]
 
     def _erase(self, to_erase: Iterable[str]) -> asyncio.Future:
         """
