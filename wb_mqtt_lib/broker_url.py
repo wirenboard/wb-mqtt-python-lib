@@ -1,5 +1,5 @@
 """
-Broker address from a URL: unix socket, tcp or websockets, optionally with a login.
+Broker address from a URL, a unix socket, tcp or websockets, optionally with a login.
 """
 
 from dataclasses import dataclass, field
@@ -10,6 +10,7 @@ from .topics import broker_refuses
 
 DEFAULT_BROKER_URL = "unix:///var/run/mosquitto/mosquitto.sock"
 
+# How the client connects, the transports of aiomqtt
 Transport = Literal["unix", "tcp", "websockets"]
 
 # mqtt-tcp is the name wb-common takes for tcp
@@ -52,6 +53,7 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
         ValueError: no client could connect to this URL, for example ? or # that would cut the URL, unix://
             with a host or a login with a character the broker refuses. The text does not quote the URL.
     """
+    # The URL parses and has a known scheme
     if not isinstance(broker_url, str) or "://" not in broker_url:
         raise ValueError(_INVALID_URL)
     if "?" in broker_url or "#" in broker_url:
@@ -66,12 +68,15 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
     transport = _TRANSPORTS.get(parsed.scheme)
     if transport is None:
         raise ValueError(f"{_INVALID_URL}, the scheme is not unix, tcp, mqtt-tcp or ws")
+
+    # The login. mosquitto drops the connection on a login with a character it refuses, and the client
+    # would retry forever. A password is binary data in MQTT, any character goes.
     username = unquote(parsed.username) if parsed.username else None
     password = unquote(parsed.password) if parsed.password else None
-    # mosquitto drops the connection on such a login, and the client would retry forever. A password is
-    # binary data in MQTT, any character goes.
     if username is not None and any(broker_refuses(char) for char in username):
         raise ValueError(f"{_INVALID_URL}, the login has a character the broker refuses")
+
+    # A unix socket path, or a host with a port
     if parsed.scheme == "unix":
         if not parsed.path:
             raise ValueError(f"{_INVALID_URL}, no socket path")

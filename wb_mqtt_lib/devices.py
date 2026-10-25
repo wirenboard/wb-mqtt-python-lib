@@ -55,8 +55,8 @@ class Control:  # pylint: disable=too-many-public-methods
     def __hash__(self) -> int:
         return hash(self.full_name)
 
-    def _listen(self, kind: str, handler: Any) -> Any:
-        self._device_sync.add_control_listener(self.device.name, self.name, kind, handler)
+    def _listen(self, event: str, handler: Any) -> Any:
+        self._device_sync.add_control_listener(self.device.name, self.name, event, handler)
         return handler
 
     @property
@@ -299,8 +299,8 @@ class Device:  # pylint: disable=too-many-public-methods
     def __hash__(self) -> int:
         return hash(self.name)
 
-    def _listen(self, kind: str, handler: Any) -> Any:
-        self._device_sync.add_device_listener(self.name, kind, handler)
+    def _listen(self, event: str, handler: Any) -> Any:
+        self._device_sync.add_device_listener(self.name, event, handler)
         return handler
 
     @property

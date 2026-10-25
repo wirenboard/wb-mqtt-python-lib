@@ -32,16 +32,21 @@ MessageHandler = Callable[[Any], HandlerResult]
 # handler(connected), for on_connection_change of the client
 ConnectionHandler = Callable[[bool], HandlerResult]
 
-# Any of the handlers above, for the code that takes every kind
+# Any of the handlers above, for the code that takes them all
 Handler = Callable[..., Any]
 
 
-def check_handler_arguments(handler: Handler, count: int, kind: str) -> None:
+def check_handler_arguments(handler: Handler, count: int, registration: str) -> None:
     """
     Make sure the handler takes the arguments its events bring.
 
     Otherwise a mistake shows only at the first event, which for on_removed may come weeks later.
     Callables without a signature are let through.
+
+    Args:
+        handler: the handler to check.
+        count: how many arguments its events bring.
+        registration: where the handler is registered, on_value or raw for example, for the error text.
 
     Raises:
         TypeError: the handler does not take that many positional arguments.
@@ -56,7 +61,7 @@ def check_handler_arguments(handler: Handler, count: int, kind: str) -> None:
         signature.bind(*([None] * count))
     except TypeError as error:
         raise TypeError(
-            f"{kind} handler {get_handler_name(handler)} must take {count} arguments: {error}"
+            f"{registration} handler {get_handler_name(handler)} must take {count} arguments: {error}"
         ) from None
 
 
@@ -189,25 +194,25 @@ class ListenerRegistry:
 
 class ListenerSet:
     """
-    Listeners of one device, control or client by event kind. Registering the same handler twice adds nothing.
+    Listeners of one device, control or client by event. Registering the same handler twice adds nothing.
     """
 
     def __init__(self, registry: ListenerRegistry, owner: str) -> None:
         self._registry = registry
         self._owner = owner
-        self._listeners_by_kind: dict[str, dict[Handler, Listener]] = {}
+        self._listeners_by_event: dict[str, dict[Handler, Listener]] = {}
 
     def __bool__(self) -> bool:
-        return any(self._listeners_by_kind.values())
+        return any(self._listeners_by_event.values())
 
-    def add_handler(self, kind: str, handler: Handler, initial_calls: Iterable[tuple] = ()) -> Handler:
+    def add_handler(self, event: str, handler: Handler, initial_calls: Iterable[tuple] = ()) -> Handler:
         """
         Register a handler and queue the calls that describe the current state.
         """
-        listeners = self._listeners_by_kind.setdefault(kind, {})
+        listeners = self._listeners_by_event.setdefault(event, {})
         if handler in listeners:
             return handler
-        listener = self._registry.create_listener(handler, f"{kind} of {self._owner}")
+        listener = self._registry.create_listener(handler, f"{event} of {self._owner}")
         for args in initial_calls:
             listener.queue_event(args)
         listeners[handler] = listener
@@ -215,19 +220,19 @@ class ListenerSet:
 
     def remove_handler(self, handler: Handler) -> None:
         """
-        Unregister a handler from every event kind.
+        Unregister a handler from every event.
         """
-        for listeners in self._listeners_by_kind.values():
+        for listeners in self._listeners_by_event.values():
             listener: Optional[Listener] = listeners.pop(handler, None)
             if listener is not None:
                 listener.stop()
 
-    def emit_event(self, kind: str, args: tuple) -> None:
+    def emit_event(self, event: str, args: tuple) -> None:
         """
-        Queue an event for every listener of its kind.
+        Queue an event for every listener of that event.
         """
-        for listener in self._listeners_by_kind.get(kind, {}).values():
+        for listener in self._listeners_by_event.get(event, {}).values():
             listener.queue_event(args)
 
-    def has_listeners(self, kind: str) -> bool:
-        return bool(self._listeners_by_kind.get(kind))
+    def has_listeners(self, event: str) -> bool:
+        return bool(self._listeners_by_event.get(event))

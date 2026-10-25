@@ -34,10 +34,10 @@ from .values import (
     TitleLike,
     TranslatedTitle,
     check_name,
-    from_payload,
     parse_control_meta,
     parse_device_meta,
     parse_meta_fields,
+    parse_value,
     to_payload_and_value,
 )
 
@@ -413,7 +413,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
     # Event handlers
     # ------------------------------------------------------------
 
-    def add_control_listener(self, device_name: str, control_name: str, kind: str, handler: Handler) -> None:
+    def add_control_listener(self, device_name: str, control_name: str, event: str, handler: Handler) -> None:
         """
         Register a handler of a control event.
 
@@ -427,11 +427,11 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         """
         self._raise_if_closed()
         self._check_device_watched(device_name)
-        if kind == "command":
+        if event == "command":
             self._check_takes_commands(device_name)
-        self.state.add_control_listener(device_name, control_name, kind, handler)
+        self.state.add_control_listener(device_name, control_name, event, handler)
 
-    def add_device_listener(self, device_name: str, kind: str, handler: Handler) -> None:
+    def add_device_listener(self, device_name: str, event: str, handler: Handler) -> None:
         """
         Register a handler of an event of the device itself or of any of its controls.
 
@@ -445,9 +445,9 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         """
         self._raise_if_closed()
         self._check_device_watched(device_name)
-        if kind == "control_command":
+        if event == "control_command":
             self._check_takes_commands(device_name)
-        self.state.add_device_listener(device_name, kind, handler)
+        self.state.add_device_listener(device_name, event, handler)
 
     # ------------------------------------------------------------
     # Messages from the broker
@@ -498,7 +498,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
 
         # A press is always True, another command is parsed by the meta
         is_press = control.meta.control_type == ControlType.PUSHBUTTON
-        value = True if is_press else from_payload(control.meta, payload)
+        value = True if is_press else parse_value(control.meta, payload)
         self.state.emit_command(topic.device, topic.control, value)
 
     # ------------------------------------------------------------
@@ -763,7 +763,7 @@ def _apply_value(state: State, device_name: str, control_name: str, payload: str
     control.payload = payload or None
     if control.meta is not None:
         state.set_control_value(
-            device_name, control_name, from_payload(control.meta, payload) if payload else None
+            device_name, control_name, parse_value(control.meta, payload) if payload else None
         )
     elif not payload:
         state.drop_control_if_unused(device_name, control_name)

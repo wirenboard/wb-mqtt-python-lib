@@ -20,7 +20,7 @@ from .values import (
     ControlType,
     DeviceMeta,
     TranslatedTitle,
-    from_payload,
+    parse_value,
 )
 
 logger = logging.getLogger(__name__)
@@ -34,7 +34,7 @@ _DEVICE_EVENT_OF = {
     "meta": "control_meta",
     "command": "control_command",
 }
-_CONTROL_EVENT_OF = {device_kind: kind for kind, device_kind in _DEVICE_EVENT_OF.items()}
+_CONTROL_EVENT_OF = {device_event: event for event, device_event in _DEVICE_EVENT_OF.items()}
 # Arguments each event brings to its handler
 _HANDLER_ARGUMENTS = {"added": 1, "removed": 1, "meta": 1, "command": 2, "value": 3, "error": 3}
 # Events of the device itself, they bring the device instead of a control
@@ -258,44 +258,46 @@ class State:  # pylint: disable=too-many-public-methods
     # Event handlers
     # ------------------------------------------------------------
 
-    def add_control_listener(self, device_name: str, control_name: str, kind: str, handler: Handler) -> None:
+    def add_control_listener(self, device_name: str, control_name: str, event: str, handler: Handler) -> None:
         """
         Register a handler of a control event and queue the calls that describe the current state.
         """
-        check_handler_arguments(handler, _HANDLER_ARGUMENTS[kind], f"on_{kind}")
+        check_handler_arguments(handler, _HANDLER_ARGUMENTS[event], f"on_{event}")
         control = self.ensure_control(device_name, control_name)
         if not control.exists:
             logger.debug(
-                "Control %s/%s does not exist yet, its %s handler waits", device_name, control_name, kind
+                "Control %s/%s does not exist yet, its %s handler waits", device_name, control_name, event
             )
-        control.listeners.add_handler(kind, handler, self._get_initial_calls(device_name, control_name, kind))
+        control.listeners.add_handler(
+            event, handler, self._get_initial_calls(device_name, control_name, event)
+        )
 
-    def add_device_listener(self, device_name: str, kind: str, handler: Handler) -> None:
+    def add_device_listener(self, device_name: str, event: str, handler: Handler) -> None:
         """
         Register a handler of an event of the device itself or of any of its controls.
         """
         # Events of the device itself
-        if kind in _DEVICE_SELF_EVENTS:
-            check_handler_arguments(handler, _HANDLER_ARGUMENTS[kind], f"on_{kind}")
+        if event in _DEVICE_SELF_EVENTS:
+            check_handler_arguments(handler, _HANDLER_ARGUMENTS[event], f"on_{event}")
             device = self.ensure_device(device_name)
             initial_calls: list[tuple] = []
-            if device.exists and kind == "added":
+            if device.exists and event == "added":
                 initial_calls = [(self._make_device(device_name),)]
-            elif device.exists and kind == "error":
+            elif device.exists and event == "error":
                 initial_calls = [(self._make_device(device_name), device.error, None)]
-            device.listeners.add_handler(kind, handler, initial_calls)
+            device.listeners.add_handler(event, handler, initial_calls)
             return
 
         # Events of every control of the device
-        control_kind = _CONTROL_EVENT_OF[kind]
-        check_handler_arguments(handler, _HANDLER_ARGUMENTS[control_kind], f"on_{kind}")
+        control_event = _CONTROL_EVENT_OF[event]
+        check_handler_arguments(handler, _HANDLER_ARGUMENTS[control_event], f"on_{event}")
         device = self.ensure_device(device_name)
         initial_calls = [
             call
             for control_name in self.existing_control_names(device_name)
-            for call in self._get_initial_calls(device_name, control_name, control_kind)
+            for call in self._get_initial_calls(device_name, control_name, control_event)
         ]
-        device.listeners.add_handler(kind, handler, initial_calls)
+        device.listeners.add_handler(event, handler, initial_calls)
 
     def remove_control_listener(self, device_name: str, control_name: str, handler: Handler) -> None:
         control = self.get_control(device_name, control_name)
@@ -338,7 +340,7 @@ class State:  # pylint: disable=too-many-public-methods
         if control.error:
             self._emit_control_event(device_name, control_name, "error", control.error, None)
         if control.payload is not None:
-            self.set_control_value(device_name, control_name, from_payload(meta, control.payload))
+            self.set_control_value(device_name, control_name, parse_value(meta, control.payload))
 
     def set_control_meta(self, device_name: str, control_name: str, meta: ControlMeta) -> None:
         """
@@ -353,7 +355,7 @@ class State:  # pylint: disable=too-many-public-methods
         if meta.control_type != previous.control_type:
             if meta.control_type == ControlType.PUSHBUTTON:
                 control.payload = None
-            control.value = None if control.payload is None else from_payload(meta, control.payload)
+            control.value = None if control.payload is None else parse_value(meta, control.payload)
             if control.value is not None:
                 _wake_value_waits(control)
         self._emit_control_event(device_name, control_name, "meta")
@@ -528,7 +530,7 @@ class State:  # pylint: disable=too-many-public-methods
     # Helpers
     # ------------------------------------------------------------
 
-    def _get_initial_calls(self, device_name: str, control_name: str, kind: str) -> list[tuple]:
+    def _get_initial_calls(self, device_name: str, control_name: str, event: str) -> list[tuple]:
         """
         Calls that describe the current state to a handler registered now.
 
@@ -538,11 +540,11 @@ class State:  # pylint: disable=too-many-public-methods
         if control is None or not control.exists:
             return []
         control_object = self._make_control(device_name, control_name)
-        if kind == "added":
+        if event == "added":
             return [(control_object,)]
-        if kind == "value" and control.value is not None:
+        if event == "value" and control.value is not None:
             return [(control_object, control.value, None)]
-        if kind == "error":
+        if event == "error":
             return [(control_object, control.error, None)]
         return []
 
@@ -560,37 +562,37 @@ class State:  # pylint: disable=too-many-public-methods
         existed, title, driver = state_before
         device = self._devices[device_name]
         if device.exists and not existed:
-            kind = "added"
+            event = "added"
         elif existed and not device.exists:
-            kind = "removed"
+            event = "removed"
         elif device.exists and (device.title, device.driver) != (title, driver):
-            kind = "meta"
+            event = "meta"
         else:
             return
 
         # The event, and on_error too for a device that appears with an error
-        if device.listeners.has_listeners(kind):
-            device.listeners.emit_event(kind, (self._make_device(device_name),))
-        if kind == "added" and device.error and device.listeners.has_listeners("error"):
+        if device.listeners.has_listeners(event):
+            device.listeners.emit_event(event, (self._make_device(device_name),))
+        if event == "added" and device.error and device.listeners.has_listeners("error"):
             device.listeners.emit_event("error", (self._make_device(device_name), device.error, None))
 
-    def _emit_control_event(self, device_name: str, control_name: str, kind: str, *details: Any) -> None:
+    def _emit_control_event(self, device_name: str, control_name: str, event: str, *details: Any) -> None:
         """
         Queue an event of a control for its listeners and those of its device. The arguments are built only
         when someone listens.
         """
         device = self._devices[device_name]
         control_listeners = device.controls[control_name].listeners
-        device_kind = _DEVICE_EVENT_OF[kind]
-        to_control = control_listeners.has_listeners(kind)
-        to_device = device.listeners.has_listeners(device_kind)
+        device_event = _DEVICE_EVENT_OF[event]
+        to_control = control_listeners.has_listeners(event)
+        to_device = device.listeners.has_listeners(device_event)
         if not (to_control or to_device):
             return
         args = (self._make_control(device_name, control_name), *details)
         if to_control:
-            control_listeners.emit_event(kind, args)
+            control_listeners.emit_event(event, args)
         if to_device:
-            device.listeners.emit_event(device_kind, args)
+            device.listeners.emit_event(device_event, args)
 
 
 def _is_nan(value: Any) -> bool:

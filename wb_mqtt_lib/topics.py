@@ -23,6 +23,10 @@ MAX_SLASHES = 200
 # MQTT limits a topic to 65535 bytes of UTF-8
 _MAX_TOPIC_BYTES = 65535
 
+# ------------------------------------------------------------
+# Checks of topics and filters
+# ------------------------------------------------------------
+
 
 class CheckedTopic(str):
     """
@@ -68,6 +72,7 @@ def check_filter(topic_filter: str) -> None:
         raise ValueError(f"shared subscriptions are not supported, got {topic_filter!r}")
     levels = topic_filter.split("/")
     for index, level in enumerate(levels):
+        # + must be a whole level, # a whole last level
         if ("#" in level and (level != "#" or index != len(levels) - 1)) or ("+" in level and level != "+"):
             raise ValueError(f"invalid topic filter {topic_filter!r}")
     _check_topic_text(topic_filter)
@@ -85,6 +90,28 @@ def _check_topic_text(topic: str) -> None:
         raise ValueError(f"topic {topic!r} contains characters the broker refuses {refused}")
     if topic.count("/") > MAX_SLASHES:
         raise ValueError(f"topic has more than {MAX_SLASHES} slashes")
+
+
+def broker_refuses(char: str) -> bool:
+    """
+    Whether mosquitto drops the connection on a topic or a login with this character.
+
+    These are NUL and other control characters, surrogates and Unicode non-characters, as
+    mosquitto_validate_utf8 checks them.
+    """
+    code = ord(char)
+    return (
+        code <= 0x1F
+        or 0x7F <= code <= 0x9F
+        or 0xD800 <= code <= 0xDFFF
+        or 0xFDD0 <= code <= 0xFDEF
+        or (code & 0xFFFF) in (0xFFFE, 0xFFFF)
+    )
+
+
+# ------------------------------------------------------------
+# Parsing
+# ------------------------------------------------------------
 
 
 class TopicKind(enum.Enum):
@@ -111,27 +138,7 @@ class ParsedTopic:
     kind: TopicKind
 
 
-@dataclass(frozen=True)
-class DeviceTopics:
-    """
-    Prepared publication topics kept with an own device.
-    """
-
-    meta: str
-    error: str
-
-
-@dataclass(frozen=True)
-class ControlTopics:
-    """
-    Prepared publication topics kept with an own control.
-    """
-
-    value: str
-    meta: str
-    error: str
-
-
+# What a control topic carries by the levels after the control name
 _CONTROL_TAILS = {
     (): TopicKind.VALUE,
     ("meta",): TopicKind.META,
@@ -161,28 +168,37 @@ def parse(topic: str) -> Optional[ParsedTopic]:
     return ParsedTopic(parts[2], parts[4], kind) if kind else None
 
 
-def broker_refuses(char: str) -> bool:
-    """
-    Whether mosquitto drops the connection on a topic or a login with this character.
-
-    These are NUL and other control characters, surrogates and Unicode non-characters, as
-    mosquitto_validate_utf8 checks them.
-    """
-    code = ord(char)
-    return (
-        code <= 0x1F
-        or 0x7F <= code <= 0x9F
-        or 0xD800 <= code <= 0xDFFF
-        or 0xFDD0 <= code <= 0xFDEF
-        or (code & 0xFFFF) in (0xFFFE, 0xFFFF)
-    )
-
-
 def device_name(topic: str) -> str:
     """
     Device name from any topic under /devices/<device>/.
     """
     return topic.split("/")[2]
+
+
+# ------------------------------------------------------------
+# Topics and filters of a device
+# ------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class DeviceTopics:
+    """
+    Prepared publication topics kept with an own device.
+    """
+
+    meta: str
+    error: str
+
+
+@dataclass(frozen=True)
+class ControlTopics:
+    """
+    Prepared publication topics kept with an own control.
+    """
+
+    value: str
+    meta: str
+    error: str
 
 
 def device_meta(device: str) -> str:
@@ -221,12 +237,15 @@ def device_root(device: str) -> str:
 
 
 def device_tree(device: str) -> str:
+    """
+    Filter of every topic of the device.
+    """
     return f"/devices/{device}/#"
 
 
 def watch_filters(device: str) -> tuple[str, ...]:
     """
-    Filters of everything a reader needs from a device: meta, values and errors, without legacy subtopics.
+    Filters of everything a reader needs from a device, meta, values and errors without legacy subtopics.
     """
     return (
         device_meta(device),
@@ -240,6 +259,10 @@ def watch_filters(device: str) -> tuple[str, ...]:
 def command_filter(device: str) -> str:
     return control_command(device, "+")
 
+
+# ------------------------------------------------------------
+# Order of erasure
+# ------------------------------------------------------------
 
 # (stage, place inside the stage). Stage 0 is the values, commands and errors of the controls with their
 # legacy meta subtopics, stage 1 the control meta, the error of the device and its legacy subtopics,

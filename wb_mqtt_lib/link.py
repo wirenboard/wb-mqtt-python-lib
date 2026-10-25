@@ -108,7 +108,7 @@ class Connection:
             transport=address.transport,
             websocket_path=address.websocket_path,
             identifier=identifier,
-            # MQTT 5 for the subscription options: numbers of subscriptions and the retain flag as published
+            # MQTT 5 for the subscription options, numbers of subscriptions and the retain flag as published
             protocol=aiomqtt.ProtocolVersion.V5,
             keepalive=KEEPALIVE_S,
             timeout=ACK_TIMEOUT_S,

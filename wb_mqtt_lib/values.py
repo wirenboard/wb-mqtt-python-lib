@@ -2,7 +2,7 @@
 Values, titles, errors and meta in the form the Wiren Board convention puts them into MQTT.
 
 What the service passes in is checked strictly. Meta of foreign devices comes from any client
-on the controller, so it is parsed leniently: a broken field is dropped, a broken meta is ignored as a whole.
+on the controller, so it is parsed leniently. A broken field is dropped, a broken meta is ignored as a whole.
 """
 
 import json
@@ -14,6 +14,10 @@ from types import MappingProxyType
 from typing import Any, Mapping, Optional, Union
 
 from .topics import broker_refuses
+
+# ------------------------------------------------------------
+# Control types
+# ------------------------------------------------------------
 
 
 class ControlType(StrEnum):
@@ -62,25 +66,40 @@ _DEPRECATED_NUMBER_TYPES = frozenset(
         "current",
     }
 )
-_READ_AS_NUMBER = _NUMBER_TYPES | _DEPRECATED_NUMBER_TYPES
-# Integers by the convention: seconds of local time, a 64-bit 1-Wire address
+# Every type whose value is a number
+_ALL_NUMBER_TYPES = _NUMBER_TYPES | _DEPRECATED_NUMBER_TYPES
+# Integers by the convention, seconds of local time and a 64-bit 1-Wire address
 _INTEGER_TYPES = frozenset({ControlType.LOCAL_TIME, ControlType.W1_ID})
+
+# ------------------------------------------------------------
+# Names
+# ------------------------------------------------------------
+
 _FORBIDDEN_NAME_CHARS = frozenset("/+#")
 
 
-def check_name(name: str, kind: str) -> None:
+def check_name(name: str, entity: str) -> None:
     """
     Reject a device, control or driver name that would break the topic structure or the connection.
+
+    Args:
+        name: the name to check.
+        entity: whose name it is, "device", "control" or "driver", for the error text.
 
     Raises:
         ValueError: the name is empty or contains /, +, #, a control character or another character
             the broker refuses.
     """
     if not isinstance(name, str) or not name:
-        raise ValueError(f"{kind} name must be a non-empty string")
+        raise ValueError(f"{entity} name must be a non-empty string")
     forbidden = {char for char in name if char in _FORBIDDEN_NAME_CHARS or broker_refuses(char)}
     if forbidden:
-        raise ValueError(f"{kind} name {name!r} contains forbidden characters {sorted(forbidden)}")
+        raise ValueError(f"{entity} name {name!r} contains forbidden characters {sorted(forbidden)}")
+
+
+# ------------------------------------------------------------
+# Titles
+# ------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -149,12 +168,17 @@ class TranslatedTitle:
         return {lang: text for lang, text in (("en", self.en), ("ru", self.ru)) if text}
 
 
+# What the service may pass as a title
 TitleLike = Union[None, str, Mapping[str, str], TranslatedTitle]
+
+# ------------------------------------------------------------
+# Errors
+# ------------------------------------------------------------
 
 
 class ControlErrorFlags(Flag):
     """
-    Error of a control: r read, w write, p poll. NONE means no error.
+    Error of a control, r read, w write and p poll. NONE means no error.
     """
 
     NONE = 0
@@ -166,7 +190,7 @@ class ControlErrorFlags(Flag):
         """
         Letters as the convention writes them, empty for no error.
         """
-        return "".join(char for flag, char in _ERROR_CHARS if self & flag)
+        return "".join(letter for flag, letter in _ERROR_LETTERS if self & flag)
 
     @classmethod
     def from_mqtt(cls, text: str) -> "ControlErrorFlags":
@@ -174,36 +198,21 @@ class ControlErrorFlags(Flag):
         Flags from the letters in a topic. Letters other than r, w and p are ignored.
         """
         error = cls.NONE
-        for flag, char in _ERROR_CHARS:
-            if char in text:
+        for flag, letter in _ERROR_LETTERS:
+            if letter in text:
                 error |= flag
         return error
 
 
-_ERROR_CHARS = ((ControlErrorFlags.READ, "r"), (ControlErrorFlags.WRITE, "w"), (ControlErrorFlags.POLL, "p"))
+_ERROR_LETTERS = (
+    (ControlErrorFlags.READ, "r"),
+    (ControlErrorFlags.WRITE, "w"),
+    (ControlErrorFlags.POLL, "p"),
+)
 
-
-def _parse_enum(enum: Optional[Mapping[str, TitleLike]]) -> Optional[Mapping[str, TranslatedTitle]]:
-    """
-    Enum of a control as {value: title} from what the service passes. A value without a title shows as itself.
-
-    The result is read-only, the meta changes only through update_meta.
-
-    Raises:
-        TypeError: enum is not a mapping, a value is not valid in UTF-8 or a title is not valid.
-    """
-    if enum is None:
-        return None
-    if not isinstance(enum, Mapping):
-        raise TypeError(f"enum must be a mapping {{value: title}}, got {enum!r}")
-    parsed = {}
-    for value, title in enum.items():
-        key = str(value)
-        if not is_utf8_text(key):
-            raise TypeError(f"enum value {key!r} is not valid in UTF-8")
-        text = TranslatedTitle.parse(title)
-        parsed[key] = TranslatedTitle(en=key) if text.is_empty() else text
-    return MappingProxyType(parsed)
+# ------------------------------------------------------------
+# Meta of controls
+# ------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -265,6 +274,8 @@ def parse_meta_fields(meta_fields: Mapping[str, Any]) -> dict[str, Any]:
     unknown = set(meta_fields) - _META_FIELDS
     if unknown:
         raise TypeError(f"unknown meta fields {sorted(unknown)}")
+
+    # precision, minimum and maximum are finite numbers, JSON has no infinity or NaN
     for name in ("precision", "minimum", "maximum"):
         number = meta_fields.get(name)
         if number is None:
@@ -272,10 +283,11 @@ def parse_meta_fields(meta_fields: Mapping[str, Any]) -> dict[str, Any]:
         if not _is_number(number):
             raise TypeError(f"{name} must be a number, got {number!r}")
         if not _is_finite(number):
-            # JSON has no infinity or NaN
             raise ValueError(f"{name} must be a finite number, got {number!r}")
         if name == "precision" and number <= 0:
             raise ValueError(f"precision must be a positive number, got {number!r}")
+
+    # units, order, readonly and hidden by their types
     units = meta_fields.get("units")
     if units is not None and not is_utf8_text(units):
         raise TypeError(f"units must be a string, got {units!r}")
@@ -285,12 +297,37 @@ def parse_meta_fields(meta_fields: Mapping[str, Any]) -> dict[str, Any]:
     for flag in ("readonly", "hidden"):
         if flag in meta_fields and not isinstance(meta_fields[flag], bool):
             raise TypeError(f"{flag} must be True or False, got {meta_fields[flag]!r}")
+
+    # title and enum in their parsed form
     parsed = dict(meta_fields)
     if "title" in parsed:
         parsed["title"] = TranslatedTitle.parse(parsed["title"])
     if "enum" in parsed:
         parsed["enum"] = _parse_enum(parsed["enum"])
     return parsed
+
+
+def _parse_enum(enum: Optional[Mapping[str, TitleLike]]) -> Optional[Mapping[str, TranslatedTitle]]:
+    """
+    Enum of a control as {value: title} from what the service passes. A value without a title shows as itself.
+
+    The result is read-only, the meta changes only through update_meta.
+
+    Raises:
+        TypeError: enum is not a mapping, a value is not valid in UTF-8 or a title is not valid.
+    """
+    if enum is None:
+        return None
+    if not isinstance(enum, Mapping):
+        raise TypeError(f"enum must be a mapping {{value: title}}, got {enum!r}")
+    parsed = {}
+    for value, title in enum.items():
+        key = str(value)
+        if not is_utf8_text(key):
+            raise TypeError(f"enum value {key!r} is not valid in UTF-8")
+        text = TranslatedTitle.parse(title)
+        parsed[key] = TranslatedTitle(en=key) if text.is_empty() else text
+    return MappingProxyType(parsed)
 
 
 def parse_control_meta(payload: str) -> tuple[Optional[ControlMeta], Optional[ControlErrorFlags]]:
@@ -325,6 +362,11 @@ def parse_control_meta(payload: str) -> tuple[Optional[ControlMeta], Optional[Co
     return meta, ControlErrorFlags.from_mqtt(error) if isinstance(error, str) else None
 
 
+# ------------------------------------------------------------
+# Meta of devices and snapshots
+# ------------------------------------------------------------
+
+
 @dataclass(frozen=True)
 class DeviceMeta:
     """
@@ -339,6 +381,16 @@ class DeviceMeta:
         if not self.title.is_empty():
             meta["title"] = self.title.to_dict()
         return json.dumps(meta, ensure_ascii=False)
+
+
+def parse_device_meta(payload: str) -> Optional[DeviceMeta]:
+    """
+    JSON meta of a foreign device, None when the payload is not a JSON object.
+    """
+    data = _parse_json_object(payload)
+    if data is None:
+        return None
+    return DeviceMeta(TranslatedTitle.from_meta(data.get("title")), _str_or_none(data.get("driver")))
 
 
 @dataclass(frozen=True)
@@ -367,14 +419,9 @@ class DeviceSnapshot:
     error: ControlErrorFlags = ControlErrorFlags.NONE
 
 
-def parse_device_meta(payload: str) -> Optional[DeviceMeta]:
-    """
-    JSON meta of a foreign device, None when the payload is not a JSON object.
-    """
-    data = _parse_json_object(payload)
-    if data is None:
-        return None
-    return DeviceMeta(TranslatedTitle.from_meta(data.get("title")), _str_or_none(data.get("driver")))
+# ------------------------------------------------------------
+# Values
+# ------------------------------------------------------------
 
 
 def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
@@ -394,18 +441,22 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
         if not isinstance(value, bool):
             raise TypeError(f"{control_type} control takes True or False, got {value!r}")
         return ("1" if value else "0"), value
+
     if control_type == ControlType.PUSHBUTTON:
         if value is not True:
             raise TypeError("a pushbutton press is set_value(True)")
         return "1", True
-    if control_type in _READ_AS_NUMBER:
+
+    if control_type in _ALL_NUMBER_TYPES:
         if not _is_number(value) or not _is_finite(value):
             raise TypeError(f"{control_type} control takes a finite number, got {value!r}")
         return _format_number(value, meta.precision), value
+
     if control_type in _INTEGER_TYPES:
         if not is_int(value):
             raise TypeError(f"{control_type} control takes an int, got {value!r}")
         return str(value), value
+
     if control_type == ControlType.RGB:
         if (
             not isinstance(value, (tuple, list))
@@ -415,6 +466,8 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
             raise TypeError(f"rgb control takes three ints from 0 to 255, got {value!r}")
         normalized = tuple(value)
         return ";".join(str(part) for part in normalized), normalized
+
+    # text and every other type
     if value is None:
         raise TypeError(f"{control_type} control takes a value, got None")
     text = str(value)
@@ -423,7 +476,7 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
     return text, text
 
 
-def from_payload(meta: ControlMeta, payload: str) -> Any:
+def parse_value(meta: ControlMeta, payload: str) -> Any:
     """
     String from a topic turned into a value by the control type, as control.value has it.
 
@@ -434,7 +487,7 @@ def from_payload(meta: ControlMeta, payload: str) -> Any:
     try:
         if control_type in _BOOLEAN_TYPES:
             return float(payload) != 0
-        if control_type in _READ_AS_NUMBER:
+        if control_type in _ALL_NUMBER_TYPES:
             return _parse_number(payload)
         if control_type in _INTEGER_TYPES:
             return int(payload)
@@ -450,10 +503,10 @@ def _format_number(value: Union[int, float], precision: Optional[float]) -> str:
     if not precision:
         if isinstance(value, int):
             return str(value)
-        # As wb-rules does: the shortest digits, without an exponent and without a trailing .0
+        # As wb-rules does, the shortest digits, without an exponent and without a trailing .0
         text = format(Decimal(repr(value)).normalize(), "f")
         return "0" if text == "-0" else text
-    # As wb-rules does: as many decimals as precision has, 0.25 gives two and 2.5 gives one,
+    # As wb-rules does, as many decimals as precision has, 0.25 gives two and 2.5 gives one,
     # without trailing zeros
     decimals = max(0, -Decimal(str(precision)).normalize().as_tuple().exponent)
     text = f"{value:.{decimals}f}"
@@ -469,16 +522,9 @@ def _parse_number(payload: str) -> Union[int, float]:
         return float(payload)
 
 
-def _parse_json_object(payload: str) -> Optional[dict]:
-    try:
-        data = json.loads(payload)
-    except (ValueError, RecursionError):
-        return None
-    return data if isinstance(data, dict) else None
-
-
-def _str_or_none(value: Any) -> Optional[str]:
-    return value if isinstance(value, str) else None
+# ------------------------------------------------------------
+# Checks and lenient reading of foreign meta
+# ------------------------------------------------------------
 
 
 def is_utf8_text(value: Any) -> bool:
@@ -492,19 +538,6 @@ def is_utf8_text(value: Any) -> bool:
     except UnicodeEncodeError:
         return False
     return True
-
-
-def _number_or_none(value: Any) -> Optional[float]:
-    return value if _is_number(value) and _is_finite(value) else None
-
-
-def _precision_or_none(value: Any) -> Optional[float]:
-    number = _number_or_none(value)
-    return number if number is not None and number > 0 else None
-
-
-def _int_or_none(value: Any) -> Optional[int]:
-    return value if is_int(value) else None
 
 
 def is_int(value: Any) -> bool:
@@ -524,3 +557,28 @@ def _is_finite(number: Union[int, float]) -> bool:
     except OverflowError:
         # An int too large for a float
         return False
+
+
+def _parse_json_object(payload: str) -> Optional[dict]:
+    try:
+        data = json.loads(payload)
+    except (ValueError, RecursionError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _str_or_none(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) else None
+
+
+def _number_or_none(value: Any) -> Optional[float]:
+    return value if _is_number(value) and _is_finite(value) else None
+
+
+def _precision_or_none(value: Any) -> Optional[float]:
+    number = _number_or_none(value)
+    return number if number is not None and number > 0 else None
+
+
+def _int_or_none(value: Any) -> Optional[int]:
+    return value if is_int(value) else None
