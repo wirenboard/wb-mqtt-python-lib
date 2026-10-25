@@ -1,14 +1,12 @@
 """
 Client: one broker connection, reconnect, the devices of the service and its background tasks.
-
-The session loop is ported from BrokerSessions in wb-mqtt-dali, the pause between attempts grows.
 """
 
 import asyncio
 import contextlib
 import logging
 import uuid
-from typing import Any, Coroutine, Optional, TypeVar
+from typing import Any, Coroutine, Optional
 
 from . import link
 from .broker_url import DEFAULT_BROKER_URL, parse_broker_url
@@ -36,8 +34,6 @@ RECONNECT_MAX_DELAY_S = 30.0
 # Drivers of the clients connected in this process. Cleanup goes by the driver, so it must not be shared
 _DRIVERS_IN_USE: set[str] = set()
 
-T = TypeVar("T")
-
 
 class Client:  # pylint: disable=too-many-instance-attributes
     """
@@ -46,16 +42,14 @@ class Client:  # pylint: disable=too-many-instance-attributes
     A service usually needs one client. A second one makes sense only for devices under another driver name,
     each client has its own devices and sees those of the other as foreign. A closed client stays closed.
 
-    Example:
+    Examples:
         async with Client(driver="wb-mqtt-example") as client:
             ...
 
     Args:
         driver: driver name of the service. It goes into the meta of every own device and into the client id.
-        broker_url: unix:///path/to/socket, tcp://host:port or ws://host:port/path, optionally with
-            user:password@ before the host. mqtt-tcp:// is the same as tcp://, the path of ws:// is /mqtt
-            when not given. Characters /, ?, #, @, : and % in the login or the password are written
-            percent-encoded, for example %2F for /.
+        broker_url: unix:///path/to/socket, tcp://host:port or ws://host:port/path. A login goes
+            as user:password@ before the host, percent-encoded.
 
     Raises:
         ValueError: the driver name or the URL is invalid.
@@ -65,6 +59,8 @@ class Client:  # pylint: disable=too-many-instance-attributes
         check_name(driver, "driver")
         self.driver = driver
         self._address = parse_broker_url(broker_url)
+
+        # Components the client hands the work to
         self._subscriber = Subscriber()
         self._publisher = Publisher()
         self._listener_registry = ListenerRegistry()
@@ -77,14 +73,16 @@ class Client:  # pylint: disable=too-many-instance-attributes
         self.raw = RawTopics(
             self._subscriber, self._publisher, self._listener_registry, is_closed=self._is_closed
         )
+
+        # Sessions with the broker, from connect() to close()
         self._client_id = ""
         self._session_task: Optional[asyncio.Task] = None
         self._connected_event = asyncio.Event()
-        # What on_connection_change handlers were told last
-        self._reported_link_up = False
         self._stop_requested = asyncio.Event()
         self._fatal_error: Optional[BaseException] = None
         self._holds_driver = False
+
+        # Closing
         self._closed = False
         self._close_task: Optional[asyncio.Task] = None
 
@@ -120,19 +118,22 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 is retried like a lost link.
             ClientClosedError: the client is closed or closes while connecting.
         """
-        self._check_open()
+        self._raise_if_closed()
         if self._holds_driver:
             raise RuntimeError("the client is connected already, it reconnects by itself after a lost link")
         if self.driver in _DRIVERS_IN_USE:
             raise ValueError(f"driver {self.driver} is taken by another client in this process")
+
         _DRIVERS_IN_USE.add(self.driver)
         self._holds_driver = True
+
         try:
             previous = self._session_task
             if previous is not None and not previous.done():
                 # The sessions of a cancelled call share the stop flag, the subscriptions and the queue
                 await asyncio.shield(previous)
-                self._check_open()
+                self._raise_if_closed()
+
             self._client_id = f"{self.driver}-{uuid.uuid4().hex[:8]}"
             self._stop_requested.clear()
             self._fatal_error = None
@@ -140,10 +141,12 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 self._run_sessions(), name=f"mqtt sessions {self.driver}"
             )
             connected = asyncio.create_task(self._connected_event.wait())
+
             try:
                 await asyncio.wait({connected, self._session_task}, return_when=asyncio.FIRST_COMPLETED)
             finally:
                 connected.cancel()
+
             if self._fatal_error is not None:
                 raise self._fatal_error
             if self._closed:
@@ -157,14 +160,9 @@ class Client:  # pylint: disable=too-many-instance-attributes
         """
         Stop handlers and background tasks, then disconnect. Devices stay in the broker.
 
-        Handlers and background tasks are cancelled, also when they wait for the broker. Calls of other code
-        that still wait for the broker end with ClientClosedError. Own state that could not be sent while
-        the link was down is dropped. Safe to call from a handler or a background task of this client
-        and from several tasks at once, the one that calls it first is not cancelled.
-
-        The cleanup runs in a task of its own, a cancelled call stops waiting and the cleanup goes on.
-        Another call waits for the same cleanup, except one from a handler or a background task of this
-        client, that one returns at once, the cleanup is waiting for it to end.
+        Other code that waits for the broker gets ClientClosedError. Own changes not sent while the link
+        was down are dropped. Safe to call from a handler or a background task of this client and from
+        several tasks at once. A cancelled call stops waiting, the cleanup goes on.
         """
         caller = asyncio.current_task()
         if self._close_task is None:
@@ -185,7 +183,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         await self._device_sync.close()
         await self._stop_sessions()
 
-    def start_task(self, coro: Coroutine[Any, Any, T], name: Optional[str] = None) -> "asyncio.Task[T]":
+    def start_task(self, coro: Coroutine[Any, Any, Any], name: Optional[str] = None) -> asyncio.Task:
         """
         Run work in the background. The client keeps the task, logs its error and cancels it on close.
 
@@ -210,7 +208,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             TypeError: the handler does not take one argument.
             ClientClosedError: the client is closed.
         """
-        self._check_open()
+        self._raise_if_closed()
         check_handler_arguments(handler, 1, "on_connection_change")
         return self._connection_listeners.add("connection", handler)
 
@@ -251,12 +249,28 @@ class Client:  # pylint: disable=too-many-instance-attributes
         await self._device_sync.create_device(name, title, force)
         return self._make_device(name)
 
+    async def get_device(self, name: str, timeout: Optional[float] = None) -> Device:
+        """
+        Device by name.
+
+        Without timeout it waits only for the broker answer and returns the object even when the device
+        does not exist. exists is then False and on_added fires when it appears.
+
+        Raises:
+            ValueError: the name has forbidden characters.
+            TimeoutError: timeout is given and the device did not appear in time.
+            BrokerDisconnectedError: no broker link to read a device not read before.
+            ClientClosedError: the client is closed or closes while waiting.
+        """
+        await self._device_sync.watch_device(name)
+        if timeout is not None:
+            await self._device_sync.wait_device_exists(name, timeout)
+        return self._make_device(name)
+
     async def get_control(self, name: str, timeout: Optional[float] = None) -> Control:
         """
-        Control by name «device/control».
-
-        Without timeout it waits only for the broker answer and returns the object even when the control
-        does not exist. exists is then False and on_added fires when it appears.
+        Control by name «device/control». Without timeout it waits only for the broker answer,
+        like get_device.
 
         Raises:
             ValueError: the name is not «device/control» or has forbidden characters.
@@ -272,21 +286,6 @@ class Client:  # pylint: disable=too-many-instance-attributes
         if timeout is not None:
             await self._device_sync.wait_control_exists(device_name, control_name, timeout)
         return self._make_control(device_name, control_name)
-
-    async def get_device(self, name: str, timeout: Optional[float] = None) -> Device:
-        """
-        Device by name. Without timeout it waits only for the broker answer, like get_control.
-
-        Raises:
-            ValueError: the name has forbidden characters.
-            TimeoutError: timeout is given and the device did not appear in time.
-            BrokerDisconnectedError: no broker link to read a device not read before.
-            ClientClosedError: the client is closed or closes while waiting.
-        """
-        await self._device_sync.watch_device(name)
-        if timeout is not None:
-            await self._device_sync.wait_device_exists(name, timeout)
-        return self._make_device(name)
 
     async def get_device_names(self) -> list[str]:
         """
@@ -317,12 +316,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
 
     async def remove_driver_devices(self) -> list[str]:
         """
-        Erase every device in the broker whose meta names the driver of this client, including those created
-        now and those of another process with the same driver. A create_device cancelled just before still
-        makes its device own, the call waits for it and erases that device too.
-
-        The driver comes from the JSON meta of the device, or from the legacy /meta/driver when the JSON meta
-        names none.
+        Erase every device in the broker whose meta names the driver of this client.
 
         Returns:
             Names of the erased devices.
@@ -333,7 +327,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         """
         return await self._device_sync.remove_driver_devices()
 
-    def _check_open(self) -> None:
+    def _raise_if_closed(self) -> None:
         if self._closed:
             raise ClientClosedError("the client is closed")
 
@@ -348,12 +342,13 @@ class Client:  # pylint: disable=too-many-instance-attributes
 
     async def _run_sessions(self) -> None:
         delay = RECONNECT_MIN_DELAY_S
-        report_loss = True
+        failure_logged = False
         # A rejected login is fatal only before the first connection. Later the broker has taken this login
         # once, the retries connect when it takes it again, a stopped client the service would rebuild
         # with its devices
         connected_once = False
         while not self._stop_requested.is_set():
+            reported_connected = False
             try:
                 async with link.Connection(self._address, self._client_id) as connection:
                     connected_once = True
@@ -361,12 +356,13 @@ class Client:  # pylint: disable=too-many-instance-attributes
                     self._publisher.connection_restored(connection)
                     await self._subscriber.publish_resubscription_marker()
                     self._connected_event.set()
-                    self._report_link(True)
+                    self._connection_listeners.push("connection", (True,))
+                    reported_connected = True
                     # A session that keeps failing before this point keeps the pause growing
                     delay = RECONNECT_MIN_DELAY_S
-                    report_loss = True
+                    failure_logged = False
                     logger.info("Connected to the MQTT broker")
-                    await self._serve_session(connection)
+                    await self._read_until_stop(connection)
                     return
             except link.LinkError as error:
                 if isinstance(error, link.LoginRejected) and not connected_once:
@@ -376,8 +372,8 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 if self._stop_requested.is_set():
                     # close() is under way and no reconnect follows. On a dead link DISCONNECT gets no answer.
                     logger.debug("MQTT connection closed: %s", error)
-                elif report_loss:
-                    report_loss = False
+                elif not failure_logged:
+                    failure_logged = True
                     # Normal while the broker restarts, the client reconnects by itself
                     if connected_once:
                         logger.warning("MQTT broker connection lost: %s. Reconnecting", error)
@@ -390,26 +386,16 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 self._connected_event.clear()
                 self._subscriber.connection_lost()
                 self._publisher.connection_lost()
-                self._report_link(False)
+                if reported_connected:
+                    self._connection_listeners.push("connection", (False,))
                 await self._publisher.wait_ended_session()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stop_requested.wait(), delay)
             delay = min(delay * 2, RECONNECT_MAX_DELAY_S)
 
-    def _report_link(self, connected: bool) -> None:
+    async def _read_until_stop(self, connection: link.Connection) -> None:
         """
-        Tell on_connection_change handlers about a change of the link.
-
-        close() stops the handlers before the link goes, so they get no False from it.
-        """
-        if connected == self._reported_link_up:
-            return
-        self._reported_link_up = connected
-        self._connection_listeners.push("connection", (connected,))
-
-    async def _serve_session(self, connection: link.Connection) -> None:
-        """
-        Return on close, raise LinkLost when the link drops.
+        Hand incoming messages to the subscriber. Return on close, raise LinkLost when the link drops.
         """
         reader = asyncio.create_task(
             connection.read_messages(self._subscriber.dispatch), name="read messages"

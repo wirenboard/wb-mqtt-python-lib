@@ -100,7 +100,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             BrokerDisconnectedError: no broker link to read the device.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        self._check_open()
+        self._raise_if_closed()
         check_name(name, "device")
         device = self.state.ensure_device(name)
         if device.ownership is Ownership.OWN:
@@ -127,22 +127,22 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             raise
 
     async def wait_device_exists(self, name: str, timeout: float) -> None:
-        self._check_open()
+        self._raise_if_closed()
         await self.state.wait_device_exists(name, timeout)
 
     async def wait_control_exists(self, device_name: str, control_name: str, timeout: float) -> None:
-        self._check_open()
+        self._raise_if_closed()
         await self.state.wait_control_exists(device_name, control_name, timeout)
 
     async def wait_value(self, device_name: str, control_name: str, expected: Any, timeout: float) -> Any:
-        self._check_open()
+        self._raise_if_closed()
         self._check_watched(device_name)
         return await self.state.wait_value(device_name, control_name, expected, timeout)
 
     # Own devices
 
     async def create_device(self, name: str, title: TitleLike, force: bool = False) -> None:
-        self._check_open()
+        self._raise_if_closed()
         check_name(name, "device")
         title = TranslatedTitle.parse(title)
         prepared = topics.DeviceTopics(
@@ -199,7 +199,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         await self._publisher.publish(device.topics.meta, self._device_meta_json(device), qos=1, retain=True)
 
     async def remove_device(self, name: str) -> None:
-        self._check_open()
+        self._raise_if_closed()
         if self._is_removed(name):
             return
         device = self._require_own_device(name)
@@ -225,7 +225,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
     async def create_control(  # pylint: disable=too-many-arguments,too-many-locals
         self, device_name: str, control_name: str, control_type: str, value: Any = None, **meta_fields: Any
     ) -> None:
-        self._check_open()
+        self._raise_if_closed()
         check_name(control_name, "control")
         prepared = topics.ControlTopics(
             value=CheckedTopic(topics.control_value(device_name, control_name)),
@@ -264,7 +264,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         await self._wait_for_broker(self._publisher.queue_retained(messages))
 
     async def set_value(self, device_name: str, control_name: str, value: Any) -> None:
-        self._check_open()
+        self._raise_if_closed()
         control = self._require_existing_control(device_name, control_name)
         if not self.state.is_own(device_name):
             payload, _ = to_payload_and_value(control.meta, value)
@@ -319,7 +319,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         await self._publisher.publish(control.topics.meta, updated.to_json(), qos=1, retain=True)
 
     async def remove_control(self, device_name: str, control_name: str) -> None:
-        self._check_open()
+        self._raise_if_closed()
         if self._is_removed(device_name):
             # remove() of the device erased its controls already
             return
@@ -332,7 +332,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         await self._wait_for_broker(self._erase(erased))
 
     async def remove_driver_devices(self) -> list[str]:
-        self._check_open()
+        self._raise_if_closed()
         creations = self._tasks.named(_CREATION)
         if creations:
             # A create_device cancelled just before, as in a service that stops, still makes its device own
@@ -353,12 +353,12 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         return names
 
     async def get_device_names(self) -> list[str]:
-        self._check_open()
+        self._raise_if_closed()
         retained = await self._subscriber.read_retained([topics.ALL_DEVICE_METAS, topics.ALL_CONTROL_METAS])
         return _state_of(retained).existing_device_names()
 
     async def get_device_snapshot(self, name: str) -> Optional[DeviceSnapshot]:
-        self._check_open()
+        self._raise_if_closed()
         check_name(name, "device")
         return _snapshot_of(name, await self._subscriber.read_retained([topics.device_tree(name)]))
 
@@ -376,7 +376,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             TypeError: the handler does not take the arguments of the event.
             ClientClosedError: the client is closed.
         """
-        self._check_open()
+        self._raise_if_closed()
         self._check_watched(device_name)
         if kind == "command":
             self._check_takes_commands(device_name)
@@ -394,7 +394,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             TypeError: the handler does not take the arguments of the event.
             ClientClosedError: the client is closed.
         """
-        self._check_open()
+        self._raise_if_closed()
         self._check_watched(device_name)
         if kind == "control_command":
             self._check_takes_commands(device_name)
@@ -450,7 +450,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             NotOwnError: the device is foreign.
             ClientClosedError: the client is closed.
         """
-        self._check_open()
+        self._raise_if_closed()
         if self._is_removed(name):
             raise ControlMissingError(f"device {name} is removed")
         device = self.state.device(name)
@@ -558,7 +558,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
                 raise ClientClosedError("the client is closed") from None
             raise
 
-    def _check_open(self) -> None:
+    def _raise_if_closed(self) -> None:
         if self._is_closed():
             raise ClientClosedError("the client is closed")
 

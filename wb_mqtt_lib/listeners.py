@@ -43,7 +43,7 @@ MessageHandlerT = TypeVar("MessageHandlerT", bound=MessageHandler)
 ConnectionHandlerT = TypeVar("ConnectionHandlerT", bound=ConnectionHandler)
 
 
-def check_handler_arguments(handler: Handler, count: int, what: str) -> None:
+def check_handler_arguments(handler: Handler, count: int, kind: str) -> None:
     """
     Make sure the handler takes the arguments its events bring.
 
@@ -61,7 +61,7 @@ def check_handler_arguments(handler: Handler, count: int, what: str) -> None:
         signature.bind(*([None] * count))
     except TypeError as error:
         raise TypeError(
-            f"{what} handler {handler_name(handler)} must take {count} arguments: {error}"
+            f"{kind} handler {handler_name(handler)} must take {count} arguments: {error}"
         ) from None
 
 

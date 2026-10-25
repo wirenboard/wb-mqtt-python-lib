@@ -4,11 +4,9 @@ Background tasks the library keeps a reference to, and how failures of service c
 
 import asyncio
 import logging
-from typing import Any, Coroutine, Iterable, Optional, TypeVar
+from typing import Any, Coroutine, Iterable, Optional
 
 from .errors import BrokerDisconnectedError, ControlMissingError
-
-T = TypeVar("T")
 
 # Normal operation while the broker or a driver restarts, not a bug in the service
 _EXPECTED_FAILURES = (BrokerDisconnectedError, ControlMissingError)
@@ -22,7 +20,7 @@ def cancelled_from_outside() -> bool:
     return task is not None and task.cancelling() > 0
 
 
-def log_failure(logger: logging.Logger, what: str, error: BaseException) -> None:
+def log_failure(logger: logging.Logger, description: str, error: BaseException) -> None:
     """
     Log an exception that service code raised in a handler or a background task.
 
@@ -30,9 +28,9 @@ def log_failure(logger: logging.Logger, what: str, error: BaseException) -> None
     anything else is an ERROR with the traceback.
     """
     if isinstance(error, _EXPECTED_FAILURES):
-        logger.warning("%s failed: %s", what, error)
+        logger.warning("%s failed: %s", description, error)
     else:
-        logger.error("%s failed", what, exc_info=error)
+        logger.error("%s failed", description, exc_info=error)
 
 
 def retrieve_error(future: asyncio.Future) -> None:
@@ -67,7 +65,7 @@ class TaskSet:
         """
         return [task for task in self._tasks if task.get_name().startswith(prefix)]
 
-    def start(self, coro: Coroutine[Any, Any, T], name: str, report: bool = True) -> "asyncio.Task[T]":
+    def start(self, coro: Coroutine[Any, Any, Any], name: str, report: bool = True) -> asyncio.Task:
         """
         Start a task and keep a reference to it.
 

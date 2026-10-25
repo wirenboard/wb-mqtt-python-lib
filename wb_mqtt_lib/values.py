@@ -68,7 +68,7 @@ _INTEGER_TYPES = frozenset({ControlType.LOCAL_TIME, ControlType.W1_ID})
 _FORBIDDEN_NAME_CHARS = frozenset("/+#")
 
 
-def check_name(name: str, what: str) -> None:
+def check_name(name: str, kind: str) -> None:
     """
     Reject a device, control or driver name that would break the topic structure or the connection.
 
@@ -77,10 +77,10 @@ def check_name(name: str, what: str) -> None:
             the broker refuses.
     """
     if not isinstance(name, str) or not name:
-        raise ValueError(f"{what} name must be a non-empty string")
+        raise ValueError(f"{kind} name must be a non-empty string")
     forbidden = {char for char in name if char in _FORBIDDEN_NAME_CHARS or broker_refuses(char)}
     if forbidden:
-        raise ValueError(f"{what} name {name!r} contains forbidden characters {sorted(forbidden)}")
+        raise ValueError(f"{kind} name {name!r} contains forbidden characters {sorted(forbidden)}")
 
 
 @dataclass(frozen=True)

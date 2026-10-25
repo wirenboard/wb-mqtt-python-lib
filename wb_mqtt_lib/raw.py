@@ -69,7 +69,7 @@ class RawTopics:
             TypeError: the handler does not take one argument.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        self._check_open()
+        self._raise_if_closed()
         check_handler_arguments(handler, 1, "raw")
         if handler not in self._handlers:
             listener = self._listener_registry.create_listener(handler, f"raw {handler_name(handler)}")
@@ -127,7 +127,7 @@ class RawTopics:
             BrokerDisconnectedError: no broker link.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        self._check_open()
+        self._raise_if_closed()
         return await self._subscriber.read_retained([topic_filter])
 
     async def publish(self, topic: str, payload: Payload, qos: int = 1, retain: bool = False) -> None:
@@ -146,7 +146,7 @@ class RawTopics:
                 or the broker does not confirm it in 5 s.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        self._check_open()
+        self._raise_if_closed()
         await self._publisher.publish(topic, payload, qos=qos, retain=retain)
 
     def _stop_listener(self, handler: Handler) -> tuple[Listener, list[str]]:
@@ -154,6 +154,6 @@ class RawTopics:
         listener.stop()
         return listener, filters
 
-    def _check_open(self) -> None:
+    def _raise_if_closed(self) -> None:
         if self._is_closed():
             raise ClientClosedError("the client is closed")

@@ -274,16 +274,17 @@ _run_sessions, по кругу до close()
   → Publisher.connection_restored, новая сессия публикаций, зеркало встаёт в её очередь,
     своё состояние уходит в брокер заново
   → Subscriber.publish_resubscription_marker, маркер, который закроет выдачу retained после переподписки
-  → _report_link(True), обработчики on_connection_change получают True
-  → _serve_session
+  → обработчики on_connection_change получают True
+  → _read_until_stop
       → задача чтения, каждое сообщение в Subscriber.dispatch
   → обрыв, LinkError. Его замечает paho по ошибке сокета или когда брокер не ответил на keepalive, за 15–30 с
       → Subscriber.connection_lost, подписки забывают состояние брокера, ожидания маркеров падают
       → Publisher.connection_lost, очередь сессии сбрасывается, состояние ждёт повтора,
         события в ней получают BrokerDisconnectedError, задачи отправки отменяются
-      → _report_link(False), один раз на обрыв и неудачные попытки после него, до первого соединения нет
+      → обработчики on_connection_change получают False, если этой сессии сообщили True.
+        Поэтому False один на обрыв и неудачные попытки после него, до первого соединения его нет
       → Publisher.wait_ended_session, задачи отправки старой сессии закончены
-      → пауза от 0,5 с, удваивается до 30 с и сбрасывается, только когда сессия дошла до _report_link(True)
+      → пауза от 0,5 с, удваивается до 30 с и сбрасывается, только когда сессия дошла до True
 ```
 
 ### 6.2. Подписка и конец выдачи retained
