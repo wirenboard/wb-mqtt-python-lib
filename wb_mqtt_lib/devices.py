@@ -1,20 +1,22 @@
 """
 Device and Control objects of own and foreign devices.
 
-An object keeps only the client, the name and the device sync of the client, and reads the state
+An object keeps only the name and the device sync of the client, and reads the state
 at the moment of the call. Any number of objects for one name see the same state and are equal, so they
 are compared with ==, not with is. Only the client builds them.
 """
 
-from typing import TYPE_CHECKING, Any, Mapping, Optional
+from typing import Any, Mapping, Optional
 
+from .device_sync import DeviceSync
 from .listeners import (
-    ChangeHandlerT,
-    CommandHandlerT,
-    ControlHandlerT,
-    DeviceHandlerT,
+    ChangeHandler,
+    CommandHandler,
+    ControlHandler,
+    DeviceHandler,
     Handler,
 )
+from .state import ControlRecord, DeviceRecord
 from .values import (
     ControlErrorFlags,
     ControlMeta,
@@ -22,11 +24,6 @@ from .values import (
     TitleLike,
     TranslatedTitle,
 )
-
-if TYPE_CHECKING:
-    from .client import Client
-    from .device_sync import DeviceSync
-    from .state import ControlRecord, DeviceRecord
 
 _BUILT_BY_THE_CLIENT = "the objects come from the client, for example from client.get_control"
 
@@ -36,15 +33,13 @@ class Control:  # pylint: disable=too-many-public-methods
     A control of an own or a foreign device by name «device/control».
 
     The class is for type annotations. Objects come from Client.get_control, Device.controls
-    and Device.create_control and as the first argument of a handler, only the client builds them. A handler
-    or a wait on a foreign device that the client has not read through get_control or get_device raises
-    RuntimeError.
+    and Device.create_control and as the first argument of a handler, only the client builds them.
 
     Raises:
         TypeError: the service calls the constructor itself.
     """
 
-    def __init__(self, device: "Device", name: str, device_sync: Optional["DeviceSync"] = None) -> None:
+    def __init__(self, device: "Device", name: str, device_sync: Optional[DeviceSync] = None) -> None:
         if device_sync is None:
             raise TypeError(_BUILT_BY_THE_CLIENT)
         self.device = device
@@ -59,6 +54,14 @@ class Control:  # pylint: disable=too-many-public-methods
 
     def __hash__(self) -> int:
         return hash(self.full_name)
+
+    def _listen(self, kind: str, handler: Any) -> Any:
+        self._device_sync.add_control_listener(self.device.name, self.name, kind, handler)
+        return handler
+
+    @property
+    def _record(self) -> Optional[ControlRecord]:
+        return self._device_sync.state.control(self.device.name, self.name)
 
     @property
     def full_name(self) -> str:
@@ -113,12 +116,10 @@ class Control:  # pylint: disable=too-many-public-methods
     @property
     def value(self) -> Any:
         """
-        Current value by type.
+        Current value converted by the control type, for example bool for a switch and a number for value.
 
-        switch, alarm and wo-switch give bool, value, range and the deprecated number types like temperature
-        a number, local_time and w1-id an int, rgb three ints, text and every other type a str. A foreign
-        payload that does not parse by the type stays a str. A pushbutton has no value, it is always None.
-        None also while the control does not exist or its value has not arrived yet.
+        A foreign payload that does not parse by the type stays a str. None while the control does not exist
+        or its value has not arrived, and always for a pushbutton.
         """
         record = self._record
         return record.value if record else None
@@ -128,19 +129,19 @@ class Control:  # pylint: disable=too-many-public-methods
         record = self._record
         return record.error if record else ControlErrorFlags.NONE
 
-    def on_added(self, handler: ControlHandlerT) -> ControlHandlerT:
+    def on_added(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when the control appears. Called at once if it exists already.
         """
         return self._listen("added", handler)
 
-    def on_removed(self, handler: ControlHandlerT) -> ControlHandlerT:
+    def on_removed(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when the meta of the control is erased.
         """
         return self._listen("removed", handler)
 
-    def on_value(self, handler: ChangeHandlerT) -> ChangeHandlerT:
+    def on_value(self, handler: ChangeHandler) -> ChangeHandler:
         """
         handler(control, value, previous) on every change in the broker, for pushbutton on every press.
 
@@ -149,7 +150,7 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         return self._listen("value", handler)
 
-    def on_error(self, handler: ChangeHandlerT) -> ChangeHandlerT:
+    def on_error(self, handler: ChangeHandler) -> ChangeHandler:
         """
         handler(control, error, previous) on every change.
 
@@ -157,18 +158,18 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         return self._listen("error", handler)
 
-    def on_meta(self, handler: ControlHandlerT) -> ControlHandlerT:
+    def on_meta(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when a meta field such as the title or readonly changes.
         """
         return self._listen("meta", handler)
 
-    def on_command(self, handler: CommandHandlerT) -> CommandHandlerT:
+    def on_command(self, handler: CommandHandler) -> CommandHandler:
         """
-        handler(control, value) for a command from /on. Own controls only, the control may not exist yet,
-        a removed one waits until the service creates it again.
+        Only for an own control. handler(control, value) for a command from /on.
 
-        The handler decides what to publish, a command without a handler is dropped.
+        The handler may be added before the control exists, after remove() it waits until the service
+        creates the control again. It decides what to publish, a command without a handler is dropped.
 
         Raises:
             NotOwnError: the control is foreign.
@@ -200,28 +201,23 @@ class Control:  # pylint: disable=too-many-public-methods
 
         Raises:
             TimeoutError: the value did not come in time.
-            RuntimeError: the device is foreign and the client has not read it.
             ClientClosedError: the client is closed or closes while waiting.
         """
         return await self._device_sync.wait_value(self.device.name, self.name, expected, timeout)
 
     async def set_value(self, value: Any) -> None:
         """
-        Own control: value takes the new value at once, the payload goes out when it changed, a pushbutton
-        press every time. precision rounds only the payload.
+        Set the value of an own control or send a command to /on of a foreign one.
 
-        Foreign control: send a command to /on, the value changes when the driver publishes it.
+        An own control takes the value at once and publishes it when it changed, a pushbutton press every
+        time. None clears the value of an own control. A foreign control changes when its driver publishes
+        the value.
 
-        switch, alarm and wo-switch take bool, not 0 or 1, a pushbutton only True, value and range
-        a finite number, local_time and w1-id an int, rgb three ints from 0 to 255, kept as a tuple, text
-        anything but None whose str() is valid in UTF-8, kept as str. None clears the value of an own control
-        other than a pushbutton, the retained message is erased, value becomes None and no event comes.
+        switch, alarm and wo-switch take bool, a pushbutton only True, value and range a finite number,
+        local_time and w1-id an int, rgb three ints from 0 to 255, text anything but None.
 
-        A change of an own control returns once the connection took the message, without waiting for
-        the broker to confirm it. It waits for the broker when 20 messages of the client already wait
-        for confirmation or messages wait in the queue, for example an erasure after remove() or the replay
-        after reconnect, so a loop cannot run ahead of the broker. A command and a press return once
-        the broker confirmed them.
+        A change of an own control usually returns without waiting for the broker. A command and a press
+        return once the broker confirmed them.
 
         Raises:
             TypeError: the value does not fit the control type.
@@ -234,8 +230,7 @@ class Control:  # pylint: disable=too-many-public-methods
 
     async def set_error(self, error: ControlErrorFlags) -> None:
         """
-        Own control: set or clear the error. The library never clears it by itself. Returns without waiting
-        for the broker, as set_value of an own control.
+        Only for an own control. Set or clear the error. Returns without waiting for the broker, as set_value.
 
         Raises:
             TypeError: the error is not ControlErrorFlags.
@@ -247,7 +242,7 @@ class Control:  # pylint: disable=too-many-public-methods
 
     async def update_meta(self, **fields: Any) -> None:
         """
-        Own control: change meta fields on the fly, for example title, units or readonly.
+        Only for an own control. Change meta fields on the fly, for example title, units or readonly.
 
         A field set back to None leaves the meta, an open homeui page keeps the old one until it is reloaded.
         readonly and hidden take only True or False. With a link it returns once the broker confirmed
@@ -264,8 +259,8 @@ class Control:  # pylint: disable=too-many-public-methods
 
     async def remove(self) -> None:
         """
-        Own control: erase everything the client published under the control, raw legacy subtopics too.
-        Listeners stay and see the control again if it is created again.
+        Only for an own control. Erase everything the client published under the control, raw legacy
+        subtopics too. Listeners stay and see the control again if it is created again.
 
         Nothing happens when the control does not exist, for example after remove() of its device.
 
@@ -275,31 +270,21 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         await self._device_sync.remove_control(self.device.name, self.name)
 
-    def _listen(self, kind: str, handler: Any) -> Any:
-        self._device_sync.add_control_listener(self.device.name, self.name, kind, handler)
-        return handler
-
-    @property
-    def _record(self) -> Optional["ControlRecord"]:
-        return self._device_sync.state.control(self.device.name, self.name)
-
 
 class Device:  # pylint: disable=too-many-public-methods
     """
     An own or a foreign device by name. Exists while it has JSON meta or at least one control.
 
     The class is for type annotations. Objects come from Client.create_device and Client.get_device
-    and as an argument of a handler, only the client builds them. A handler on a foreign device that
-    the client has not read through get_device or get_control raises RuntimeError.
+    and as an argument of a handler, only the client builds them.
 
     Raises:
         TypeError: the service calls the constructor itself.
     """
 
-    def __init__(self, client: "Client", name: str, device_sync: Optional["DeviceSync"] = None) -> None:
+    def __init__(self, name: str, device_sync: Optional[DeviceSync] = None) -> None:
         if device_sync is None:
             raise TypeError(_BUILT_BY_THE_CLIENT)
-        self._client = client
         self.name = name
         self._device_sync = device_sync
 
@@ -307,10 +292,20 @@ class Device:  # pylint: disable=too-many-public-methods
         return f"<Device {self.name} own={self.is_own} exists={self.exists}>"
 
     def __eq__(self, other: object) -> bool:
-        return isinstance(other, Device) and self._client is other._client and self.name == other.name
+        return (
+            isinstance(other, Device) and self._device_sync is other._device_sync and self.name == other.name
+        )
 
     def __hash__(self) -> int:
         return hash(self.name)
+
+    def _listen(self, kind: str, handler: Any) -> Any:
+        self._device_sync.add_device_listener(self.name, kind, handler)
+        return handler
+
+    @property
+    def _record(self) -> Optional[DeviceRecord]:
+        return self._device_sync.state.device(self.name)
 
     @property
     def exists(self) -> bool:
@@ -352,26 +347,26 @@ class Device:  # pylint: disable=too-many-public-methods
             for name in self._device_sync.state.existing_control_names(self.name)
         }
 
-    def on_added(self, handler: DeviceHandlerT) -> DeviceHandlerT:
+    def on_added(self, handler: DeviceHandler) -> DeviceHandler:
         """
         handler(device) when the device appears, with its JSON meta or its first control. Called at once if
         it exists already.
         """
         return self._listen("added", handler)
 
-    def on_removed(self, handler: DeviceHandlerT) -> DeviceHandlerT:
+    def on_removed(self, handler: DeviceHandler) -> DeviceHandler:
         """
         handler(device) when the device is gone, its JSON meta and every control erased.
         """
         return self._listen("removed", handler)
 
-    def on_meta(self, handler: DeviceHandlerT) -> DeviceHandlerT:
+    def on_meta(self, handler: DeviceHandler) -> DeviceHandler:
         """
         handler(device) when the title or the driver changes while the device exists.
         """
         return self._listen("meta", handler)
 
-    def on_error(self, handler: ChangeHandlerT) -> ChangeHandlerT:
+    def on_error(self, handler: ChangeHandler) -> ChangeHandler:
         """
         handler(device, error, previous) when the error of the device itself changes.
 
@@ -379,25 +374,25 @@ class Device:  # pylint: disable=too-many-public-methods
         """
         return self._listen("error", handler)
 
-    def on_control_added(self, handler: ControlHandlerT) -> ControlHandlerT:
+    def on_control_added(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when a control of the device appears. Called at once for existing controls.
         """
         return self._listen("control_added", handler)
 
-    def on_control_removed(self, handler: ControlHandlerT) -> ControlHandlerT:
+    def on_control_removed(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when a control of the device is removed.
         """
         return self._listen("control_removed", handler)
 
-    def on_control_value(self, handler: ChangeHandlerT) -> ChangeHandlerT:
+    def on_control_value(self, handler: ChangeHandler) -> ChangeHandler:
         """
         handler(control, value, previous) for any control of the device. Called at once for known values.
         """
         return self._listen("control_value", handler)
 
-    def on_control_error(self, handler: ChangeHandlerT) -> ChangeHandlerT:
+    def on_control_error(self, handler: ChangeHandler) -> ChangeHandler:
         """
         handler(control, error, previous) for any control of the device.
 
@@ -405,15 +400,15 @@ class Device:  # pylint: disable=too-many-public-methods
         """
         return self._listen("control_error", handler)
 
-    def on_control_meta(self, handler: ControlHandlerT) -> ControlHandlerT:
+    def on_control_meta(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when meta of any control of the device changes.
         """
         return self._listen("control_meta", handler)
 
-    def on_control_command(self, handler: CommandHandlerT) -> CommandHandlerT:
+    def on_control_command(self, handler: CommandHandler) -> CommandHandler:
         """
-        handler(control, value) for a command from /on to any control of the own device.
+        Only for an own device. handler(control, value) for a command from /on to any control of the device.
 
         The commands of all controls share one queue, so they reach the handler in the order they came.
         A removed device keeps the handler until the service creates it again. control.remove_handler does
@@ -450,7 +445,7 @@ class Device:  # pylint: disable=too-many-public-methods
         value: Any = None,
     ) -> Control:
         """
-        Own device: publish a control. Nothing is published unless the whole declaration is valid.
+        Only for an own device. Publish a control. Nothing is published unless the whole declaration is valid.
 
         Without a value the web interface shows a placeholder until the first set_value, for example 0
         for a number and off for a switch.
@@ -499,8 +494,8 @@ class Device:  # pylint: disable=too-many-public-methods
 
     async def set_error(self, error: ControlErrorFlags) -> None:
         """
-        Own device: set or clear the error of the device itself. The library never clears it by itself.
-        Returns without waiting for the broker, as set_value of an own control.
+        Only for an own device. Set or clear the error of the device itself. Returns without waiting for
+        the broker, as set_value of an own control.
 
         Raises:
             TypeError: the error is not ControlErrorFlags.
@@ -512,8 +507,8 @@ class Device:  # pylint: disable=too-many-public-methods
 
     async def update_meta(self, title: TitleLike) -> None:
         """
-        Own device: change the title. With a link it returns once the broker confirmed the meta, or after
-        5 s without confirmation, then the meta goes again.
+        Only for an own device. Change the title. With a link it returns once the broker confirmed the meta,
+        or after 5 s without confirmation, then the meta goes again.
 
         Raises:
             TypeError: the title is not a string or a mapping.
@@ -525,8 +520,8 @@ class Device:  # pylint: disable=too-many-public-methods
 
     async def remove(self) -> None:
         """
-        Own device: erase everything the client published under the device, raw legacy subtopics too.
-        A second call does nothing.
+        Only for an own device. Erase everything the client published under the device, raw legacy
+        subtopics too. A second call does nothing.
 
         The erasure goes in three stages, each after the broker confirmed the one before: the values,
         errors and legacy meta subtopics of the controls, then their meta, the error of the device and its
@@ -538,11 +533,3 @@ class Device:  # pylint: disable=too-many-public-methods
             ClientClosedError: the client is closed or closes while waiting.
         """
         await self._device_sync.remove_device(self.name)
-
-    def _listen(self, kind: str, handler: Any) -> Any:
-        self._device_sync.add_device_listener(self.name, kind, handler)
-        return handler
-
-    @property
-    def _record(self) -> Optional["DeviceRecord"]:
-        return self._device_sync.state.device(self.name)

@@ -11,7 +11,7 @@ from .listeners import (
     Handler,
     Listener,
     ListenerRegistry,
-    MessageHandlerT,
+    MessageHandler,
     check_handler_arguments,
     handler_name,
 )
@@ -43,8 +43,8 @@ class RawTopics:
         self._handlers: dict[Handler, tuple[Listener, list[str]]] = {}
 
     async def subscribe(
-        self, topic_filter: str, handler: MessageHandlerT, qos: int = SUBSCRIPTION_QOS
-    ) -> MessageHandlerT:
+        self, topic_filter: str, handler: MessageHandler, qos: int = SUBSCRIPTION_QOS
+    ) -> MessageHandler:
         """
         Call handler(message) for every message under the filter. Retained messages arrive at once and again
         after every reconnect.

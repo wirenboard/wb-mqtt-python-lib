@@ -14,7 +14,7 @@ from .device_sync import DeviceSync
 from .devices import Control, Device
 from .errors import ClientClosedError, LoginRejectedError
 from .listeners import (
-    ConnectionHandlerT,
+    ConnectionHandler,
     Handler,
     ListenerRegistry,
     ListenerSet,
@@ -195,7 +195,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             raise ClientClosedError("the client is closed")
         return self._service_tasks.start(coro, name or getattr(coro, "__qualname__", "task"))
 
-    def on_connection_change(self, handler: ConnectionHandlerT) -> ConnectionHandlerT:
+    def on_connection_change(self, handler: ConnectionHandler) -> ConnectionHandler:
         """
         handler(connected) on every change of the broker link after the registration.
 
@@ -338,7 +338,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         return Control(self._make_device(device_name), control_name, self._device_sync)
 
     def _make_device(self, device_name: str) -> Device:
-        return Device(self, device_name, self._device_sync)
+        return Device(device_name, self._device_sync)
 
     async def _run_sessions(self) -> None:
         delay = RECONNECT_MIN_DELAY_S

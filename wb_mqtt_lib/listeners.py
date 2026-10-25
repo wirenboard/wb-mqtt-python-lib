@@ -8,7 +8,7 @@ import asyncio
 import inspect
 import logging
 import weakref
-from typing import Any, Awaitable, Callable, Iterable, Optional, TypeVar, Union
+from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
 from .tasks import cancelled_from_outside, log_failure
 
@@ -33,14 +33,6 @@ MessageHandler = Callable[[Any], HandlerResult]
 ConnectionHandler = Callable[[bool], HandlerResult]
 
 Handler = Callable[..., Any]
-HandlerT = TypeVar("HandlerT", bound=Handler)
-# The registration methods return the handler they got, so they also work as decorators
-ControlHandlerT = TypeVar("ControlHandlerT", bound=ControlHandler)
-DeviceHandlerT = TypeVar("DeviceHandlerT", bound=DeviceHandler)
-CommandHandlerT = TypeVar("CommandHandlerT", bound=CommandHandler)
-ChangeHandlerT = TypeVar("ChangeHandlerT", bound=ChangeHandler)
-MessageHandlerT = TypeVar("MessageHandlerT", bound=MessageHandler)
-ConnectionHandlerT = TypeVar("ConnectionHandlerT", bound=ConnectionHandler)
 
 
 def check_handler_arguments(handler: Handler, count: int, kind: str) -> None:
@@ -204,7 +196,7 @@ class ListenerSet:
     def __bool__(self) -> bool:
         return any(self._by_kind.values())
 
-    def add(self, kind: str, handler: HandlerT, initial: Iterable[tuple] = ()) -> HandlerT:
+    def add(self, kind: str, handler: Handler, initial: Iterable[tuple] = ()) -> Handler:
         """
         Register a handler and queue the calls that describe the current state.
         """

@@ -66,7 +66,8 @@ NAME_HOLDERS = pytest.mark.parametrize(
 async def test_objects_of_one_control_are_equal_and_see_one_state(driver: Client, client: Client) -> None:
     """
     get_control, device.controls and the argument of a handler give equal objects, a listener works through
-    any. The service does not build the objects itself, the constructors raise.
+    any. Objects of another client under the same name are not equal. The service does not build
+    the objects itself, the constructors raise.
     """
     temp = await (await driver.create_device("dev")).create_control("temp", ControlType.VALUE, value=1)
     first = await client.get_control("dev/temp")
@@ -80,8 +81,9 @@ async def test_objects_of_one_control_are_equal_and_see_one_state(driver: Client
     argument = seen[-1][0]
     assert first == second == argument and len({first, second, argument}) == 1
     assert first.value == second.value == argument.value == 5
+    assert temp != first and temp.device != first.device
     with pytest.raises(TypeError):
-        Device(client, "dev")
+        Device("dev")
     with pytest.raises(TypeError):
         Control(first.device, "temp")
 
