@@ -600,7 +600,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         """
         await erasure_done
         await self._subscriber.unsubscribe(
-            topics.command_filter(name), self._on_command, keep=lambda: self.state.is_own_device(name)
+            topics.command_filter(name), self._on_command, still_needed=lambda: self.state.is_own_device(name)
         )
 
     async def _wait_for_broker(self, pending: asyncio.Future) -> None:
