@@ -1,7 +1,6 @@
 """
-Listeners. Each one has its own queue and task.
-
-Its events go in order and other listeners never wait for it.
+Listeners of event handlers. Each one has its own queue and task, so its events go in order
+and other listeners never wait for it.
 """
 
 import asyncio
@@ -17,6 +16,7 @@ logger = logging.getLogger(__name__)
 # Events waiting in one queue before the log says the handler cannot keep up
 BACKLOG_WARNING = 100
 
+# What a handler returns, nothing or an awaitable when it is a coroutine function
 HandlerResult = Union[None, Awaitable[None]]
 # handler(control), for on_added, on_removed, on_meta, on_control_added, on_control_removed, on_control_meta
 ControlHandler = Callable[[Any], HandlerResult]
@@ -32,6 +32,7 @@ MessageHandler = Callable[[Any], HandlerResult]
 # handler(connected), for on_connection_change of the client
 ConnectionHandler = Callable[[bool], HandlerResult]
 
+# Any of the handlers above, for the code that takes every kind
 Handler = Callable[..., Any]
 
 
@@ -45,19 +46,21 @@ def check_handler_arguments(handler: Handler, count: int, kind: str) -> None:
     Raises:
         TypeError: the handler does not take that many positional arguments.
     """
+    # Some callables, builtins for example, give no signature
     try:
         signature = inspect.signature(handler)
     except (TypeError, ValueError):
         return
+    # A dry call with as many positional arguments as the event brings
     try:
         signature.bind(*([None] * count))
     except TypeError as error:
         raise TypeError(
-            f"{kind} handler {handler_name(handler)} must take {count} arguments: {error}"
+            f"{kind} handler {get_handler_name(handler)} must take {count} arguments: {error}"
         ) from None
 
 
-def handler_name(handler: Handler) -> str:
+def get_handler_name(handler: Handler) -> str:
     return getattr(handler, "__qualname__", repr(handler))
 
 
@@ -78,20 +81,20 @@ class Listener:
         self._stopped = False
         self._task: Optional[asyncio.Task] = None
 
-    def push(self, args: tuple) -> None:
+    def queue_event(self, args: tuple) -> None:
         self._queue.put_nowait(args)
         if self._task is None and not self._stopped:
-            self._task = asyncio.create_task(self._run(), name=f"listener {self._description}")
-            self._registry.track_task(self._task)
+            self._task = asyncio.create_task(self._handle_events(), name=f"listener {self._description}")
+            self._registry.add_listener_task(self._task)
         if self._queue.qsize() >= BACKLOG_WARNING and not self._backlog_reported:
             self._backlog_reported = True
             logger.warning("Listener %s has %d events waiting", self._description, self._queue.qsize())
 
-    def push_message(self, message: Any) -> None:
+    def queue_message(self, message: Any) -> None:
         """
         Queue a call with one message, the form subscriber callbacks have.
         """
-        self.push((message,))
+        self.queue_event((message,))
 
     @property
     def task(self) -> Optional[asyncio.Task]:
@@ -108,14 +111,14 @@ class Listener:
         Called from the handler itself, or with spare being its task, the call finishes and the listener
         stops after it.
         """
-        self._registry.discard(self)
+        self._registry.discard_listener(self)
         # A handler that catches the cancellation still ends the listener with its current call
         self._stopped = True
         # Cancelling the task that calls this would break the handler in the middle, for example of close()
         if self._task is not None and self._task not in (asyncio.current_task(), spare):
             self._task.cancel()
 
-    async def _run(self) -> None:
+    async def _handle_events(self) -> None:
         while not self._stopped:
             args = await self._queue.get()
             try:
@@ -123,16 +126,17 @@ class Listener:
                 if inspect.isawaitable(result):
                     await result
             except Exception as error:  # pylint: disable=broad-exception-caught
-                log_failure(logger, self._failure_label(args), error)
+                log_failure(logger, self._get_failure_label(args), error)
             except asyncio.CancelledError as error:
                 # A CancelledError of a task the handler awaited is a failure of the handler, not a stop
                 if cancelled_from_outside():
                     raise
-                log_failure(logger, self._failure_label(args), error)
+                log_failure(logger, self._get_failure_label(args), error)
+            # The queue caught up, the next backlog goes to the log again
             if self._backlog_reported and self._queue.empty():
                 self._backlog_reported = False
 
-    def _failure_label(self, args: tuple) -> str:
+    def _get_failure_label(self, args: tuple) -> str:
         # A raw handler gets a message, its topic tells which one broke the handler
         topic = getattr(args[0], "topic", None) if args else None
         on_topic = f" on {topic}" if isinstance(topic, str) else ""
@@ -152,7 +156,7 @@ class ListenerRegistry:
     def __len__(self) -> int:
         return len(self._listeners)
 
-    def track_task(self, task: asyncio.Task) -> None:
+    def add_listener_task(self, task: asyncio.Task) -> None:
         self._tasks.add(task)
 
     def create_listener(self, handler: Handler, description: str) -> Listener:
@@ -160,7 +164,7 @@ class ListenerRegistry:
         self._listeners.add(listener)
         return listener
 
-    def discard(self, listener: Listener) -> None:
+    def discard_listener(self, listener: Listener) -> None:
         self._listeners.discard(listener)
 
     def is_listener_task(self, task: Optional[asyncio.Task]) -> bool:
@@ -176,10 +180,10 @@ class ListenerRegistry:
         The spared listener stops after its current call.
         """
         listeners = list(self._listeners)
-        current = asyncio.current_task()
+        current_task = asyncio.current_task()
         for listener in listeners:
             listener.stop(spare)
-        tasks = [listener.task for listener in listeners if listener.task not in (None, current, spare)]
+        tasks = [listener.task for listener in listeners if listener.task not in (None, current_task, spare)]
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
@@ -191,36 +195,39 @@ class ListenerSet:
     def __init__(self, registry: ListenerRegistry, owner: str) -> None:
         self._registry = registry
         self._owner = owner
-        self._by_kind: dict[str, dict[Handler, Listener]] = {}
+        self._listeners_by_kind: dict[str, dict[Handler, Listener]] = {}
 
     def __bool__(self) -> bool:
-        return any(self._by_kind.values())
+        return any(self._listeners_by_kind.values())
 
-    def add(self, kind: str, handler: Handler, initial: Iterable[tuple] = ()) -> Handler:
+    def add_handler(self, kind: str, handler: Handler, initial_calls: Iterable[tuple] = ()) -> Handler:
         """
         Register a handler and queue the calls that describe the current state.
         """
-        listeners = self._by_kind.setdefault(kind, {})
+        listeners = self._listeners_by_kind.setdefault(kind, {})
         if handler in listeners:
             return handler
         listener = self._registry.create_listener(handler, f"{kind} of {self._owner}")
-        for args in initial:
-            listener.push(args)
+        for args in initial_calls:
+            listener.queue_event(args)
         listeners[handler] = listener
         return handler
 
-    def remove(self, handler: Handler) -> None:
+    def remove_handler(self, handler: Handler) -> None:
         """
         Unregister a handler from every event kind.
         """
-        for listeners in self._by_kind.values():
+        for listeners in self._listeners_by_kind.values():
             listener: Optional[Listener] = listeners.pop(handler, None)
             if listener is not None:
                 listener.stop()
 
-    def push(self, kind: str, args: tuple) -> None:
-        for listener in self._by_kind.get(kind, {}).values():
-            listener.push(args)
+    def emit_event(self, kind: str, args: tuple) -> None:
+        """
+        Queue an event for every listener of its kind.
+        """
+        for listener in self._listeners_by_kind.get(kind, {}).values():
+            listener.queue_event(args)
 
-    def has(self, kind: str) -> bool:
-        return bool(self._by_kind.get(kind))
+    def has_listeners(self, kind: str) -> bool:
+        return bool(self._listeners_by_kind.get(kind))

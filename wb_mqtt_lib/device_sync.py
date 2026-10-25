@@ -237,8 +237,8 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         if self._is_removed(name):
             return
         device = self._require_own_device(name)
-        if any(control.listeners.has("command") for control in device.controls.values()) or (
-            device.listeners.has("control_command")
+        if any(control.listeners.has_listeners("command") for control in device.controls.values()) or (
+            device.listeners.has_listeners("control_command")
         ):
             logger.debug("Device %s is removed, its command handlers wait until it is created again", name)
 

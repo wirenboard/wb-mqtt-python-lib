@@ -268,7 +268,7 @@ class State:  # pylint: disable=too-many-public-methods
             logger.debug(
                 "Control %s/%s does not exist yet, its %s handler waits", device_name, control_name, kind
             )
-        control.listeners.add(kind, handler, self._get_initial_calls(device_name, control_name, kind))
+        control.listeners.add_handler(kind, handler, self._get_initial_calls(device_name, control_name, kind))
 
     def add_device_listener(self, device_name: str, kind: str, handler: Handler) -> None:
         """
@@ -283,7 +283,7 @@ class State:  # pylint: disable=too-many-public-methods
                 initial_calls = [(self._make_device(device_name),)]
             elif device.exists and kind == "error":
                 initial_calls = [(self._make_device(device_name), device.error, None)]
-            device.listeners.add(kind, handler, initial_calls)
+            device.listeners.add_handler(kind, handler, initial_calls)
             return
 
         # Events of every control of the device
@@ -295,18 +295,18 @@ class State:  # pylint: disable=too-many-public-methods
             for control_name in self.existing_control_names(device_name)
             for call in self._get_initial_calls(device_name, control_name, control_kind)
         ]
-        device.listeners.add(kind, handler, initial_calls)
+        device.listeners.add_handler(kind, handler, initial_calls)
 
     def remove_control_listener(self, device_name: str, control_name: str, handler: Handler) -> None:
         control = self.get_control(device_name, control_name)
         if control is not None:
-            control.listeners.remove(handler)
+            control.listeners.remove_handler(handler)
             self.drop_control_if_unused(device_name, control_name)
 
     def remove_device_listener(self, device_name: str, handler: Handler) -> None:
         device = self._devices.get(device_name)
         if device is not None:
-            device.listeners.remove(handler)
+            device.listeners.remove_handler(handler)
 
     # ------------------------------------------------------------
     # Changes from the broker and from own operations, with their events and waits
@@ -430,9 +430,9 @@ class State:  # pylint: disable=too-many-public-methods
 
     def has_command_listeners(self, device_name: str, control_name: str) -> bool:
         device = self._devices[device_name]
-        return device.controls[control_name].listeners.has("command") or device.listeners.has(
-            "control_command"
-        )
+        return device.controls[control_name].listeners.has_listeners(
+            "command"
+        ) or device.listeners.has_listeners("control_command")
 
     def set_device_meta(self, device_name: str, meta: DeviceMeta) -> None:
         # State before the change, for _announce_device_change
@@ -456,8 +456,8 @@ class State:  # pylint: disable=too-many-public-methods
             return
         previous = device.error
         device.error = error
-        if device.exists and device.listeners.has("error"):
-            device.listeners.push("error", (self._make_device(device_name), error, previous))
+        if device.exists and device.listeners.has_listeners("error"):
+            device.listeners.emit_event("error", (self._make_device(device_name), error, previous))
 
     def clear_device_meta(self, device_name: str) -> None:
         """
@@ -569,10 +569,10 @@ class State:  # pylint: disable=too-many-public-methods
             return
 
         # The event, and on_error too for a device that appears with an error
-        if device.listeners.has(kind):
-            device.listeners.push(kind, (self._make_device(device_name),))
-        if kind == "added" and device.error and device.listeners.has("error"):
-            device.listeners.push("error", (self._make_device(device_name), device.error, None))
+        if device.listeners.has_listeners(kind):
+            device.listeners.emit_event(kind, (self._make_device(device_name),))
+        if kind == "added" and device.error and device.listeners.has_listeners("error"):
+            device.listeners.emit_event("error", (self._make_device(device_name), device.error, None))
 
     def _emit_control_event(self, device_name: str, control_name: str, kind: str, *details: Any) -> None:
         """
@@ -582,15 +582,15 @@ class State:  # pylint: disable=too-many-public-methods
         device = self._devices[device_name]
         control_listeners = device.controls[control_name].listeners
         device_kind = _DEVICE_EVENT_OF[kind]
-        to_control = control_listeners.has(kind)
-        to_device = device.listeners.has(device_kind)
+        to_control = control_listeners.has_listeners(kind)
+        to_device = device.listeners.has_listeners(device_kind)
         if not (to_control or to_device):
             return
         args = (self._make_control(device_name, control_name), *details)
         if to_control:
-            control_listeners.push(kind, args)
+            control_listeners.emit_event(kind, args)
         if to_device:
-            device.listeners.push(device_kind, args)
+            device.listeners.emit_event(device_kind, args)
 
 
 def _is_nan(value: Any) -> bool:

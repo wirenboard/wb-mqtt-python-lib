@@ -210,7 +210,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         """
         self._raise_if_closed()
         check_handler_arguments(handler, 1, "on_connection_change")
-        return self._connection_listeners.add("connection", handler)
+        return self._connection_listeners.add_handler("connection", handler)
 
     def remove_handler(self, handler: Handler) -> None:
         """
@@ -219,7 +219,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         Events the handler has not started are dropped. A call that runs now is cancelled at its next await,
         unless remove_handler is called from that handler itself.
         """
-        self._connection_listeners.remove(handler)
+        self._connection_listeners.remove_handler(handler)
 
     async def create_device(self, name: str, title: TitleLike = None, force: bool = False) -> Device:
         """
@@ -356,7 +356,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
                     self._publisher.connection_restored(connection)
                     await self._subscriber.publish_resubscription_marker()
                     self._connected_event.set()
-                    self._connection_listeners.push("connection", (True,))
+                    self._connection_listeners.emit_event("connection", (True,))
                     reported_connected = True
                     # A session that keeps failing before this point keeps the pause growing
                     delay = RECONNECT_MIN_DELAY_S
@@ -387,7 +387,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 self._subscriber.connection_lost()
                 self._publisher.connection_lost()
                 if reported_connected:
-                    self._connection_listeners.push("connection", (False,))
+                    self._connection_listeners.emit_event("connection", (False,))
                 await self._publisher.wait_ended_session()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stop_requested.wait(), delay)

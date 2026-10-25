@@ -13,7 +13,7 @@ from .listeners import (
     ListenerRegistry,
     MessageHandler,
     check_handler_arguments,
-    handler_name,
+    get_handler_name,
 )
 from .publisher import Publisher
 from .subscriber import SUBSCRIPTION_QOS, Subscriber
@@ -70,7 +70,7 @@ class RawTopics:
         self._raise_if_closed()
         check_handler_arguments(handler, 1, "raw")
         if handler not in self._handlers:
-            listener = self._listener_registry.create_listener(handler, f"raw {handler_name(handler)}")
+            listener = self._listener_registry.create_listener(handler, f"raw {get_handler_name(handler)}")
             self._handlers[handler] = (listener, [])
         entry = self._handlers[handler]
         listener, filters = entry
@@ -80,7 +80,7 @@ class RawTopics:
         try:
             # One bound method per listener, the subscriber calls it once even when filters overlap.
             # A repeated call waits there for the retained messages of the first one.
-            await self._subscriber.subscribe([topic_filter], listener.push_message, qos)
+            await self._subscriber.subscribe([topic_filter], listener.queue_message, qos)
         except BrokerDisconnectedError:
             # Subscribed all the same, the retained messages come after reconnect
             pass
@@ -110,7 +110,7 @@ class RawTopics:
 
     async def _unsubscribe_filters(self, listener: Listener, filters: list[str]) -> None:
         for topic_filter in filters:
-            await self._subscriber.unsubscribe(topic_filter, listener.push_message)
+            await self._subscriber.unsubscribe(topic_filter, listener.queue_message)
 
     async def read(self, topic_filter: str) -> dict[str, bytes]:
         """
