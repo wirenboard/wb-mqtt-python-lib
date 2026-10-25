@@ -59,43 +59,47 @@ class TaskSet:
     def __contains__(self, task: object) -> bool:
         return task in self._tasks
 
-    def named(self, prefix: str) -> list[asyncio.Task]:
+    def get_tasks_with_prefix(self, prefix: str) -> list[asyncio.Task]:
         """
         The running tasks whose name starts with prefix.
         """
         return [task for task in self._tasks if task.get_name().startswith(prefix)]
 
-    def start(self, coro: Coroutine[Any, Any, Any], name: str, report: bool = True) -> asyncio.Task:
+    def start_task(
+        self, coroutine: Coroutine[Any, Any, Any], name: str, log_error: bool = True
+    ) -> asyncio.Task:
         """
         Start a task and keep a reference to it.
 
         Args:
-            report: log the error of the task. False for a task whose caller gets the error itself.
+            log_error: log the error of the task. False for a task whose caller gets the error itself.
         """
-        task = asyncio.create_task(coro, name=name)
+        task = asyncio.create_task(coroutine, name=name)
         self._tasks.add(task)
-        task.add_done_callback(self._on_done if report else self._on_done_silently)
+        task.add_done_callback(self._forget_and_log_failure if log_error else self._forget_silently)
         return task
 
-    async def cancel_all(
-        self, extra: Iterable[asyncio.Task] = (), spare: Optional[asyncio.Task] = None
+    async def cancel_all_tasks(
+        self, extra_tasks: Iterable[asyncio.Task] = (), spare: Optional[asyncio.Task] = None
     ) -> None:
         """
-        Cancel every task and wait until they end.
+        Cancel every task and extra_tasks and wait until they end.
 
         The task that calls this and spare are skipped, so close() works from a background task of the client.
         """
-        current = asyncio.current_task()
-        tasks = [task for task in (*self._tasks, *extra) if task is not current and task is not spare]
+        current_task = asyncio.current_task()
+        tasks = [
+            task for task in (*self._tasks, *extra_tasks) if task is not current_task and task is not spare
+        ]
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
 
-    def _on_done_silently(self, task: asyncio.Task) -> None:
+    def _forget_silently(self, task: asyncio.Task) -> None:
         self._tasks.discard(task)
         retrieve_error(task)
 
-    def _on_done(self, task: asyncio.Task) -> None:
+    def _forget_and_log_failure(self, task: asyncio.Task) -> None:
         self._tasks.discard(task)
         if task.cancelled():
             if not task.cancelling():

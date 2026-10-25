@@ -82,7 +82,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         End the waits with ClientClosedError and stop subscriptions and erasures in progress.
         """
         self.state.fail_waits(ClientClosedError("the client is closed"))
-        await self._tasks.cancel_all(self._device_watches.values())
+        await self._tasks.cancel_all_tasks(self._device_watches.values())
 
     # ------------------------------------------------------------
     # Reading devices, own and foreign
@@ -183,10 +183,10 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             logger.debug("Device %s is left from a previous run, erasing %d topics", name, len(leftovers))
 
         # A cancelled caller stops waiting, the device still becomes own
-        created = self._tasks.start(
+        created = self._tasks.start_task(
             self._take_over_name(name, title, device_topics, leftovers),
             f"{_CREATION_TASK_PREFIX}{name}",
-            report=False,
+            log_error=False,
         )
         await self._wait_for_broker(created)
 
@@ -215,7 +215,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
 
         # The meta goes out, the commands get subscribed, waits for the device end
         published = self._publisher.queue_retained([(device.topics.meta, self._get_device_meta_json(device))])
-        subscribed = self._tasks.start(self._subscribe_commands(name), f"subscribe commands of {name}")
+        subscribed = self._tasks.start_task(self._subscribe_commands(name), f"subscribe commands of {name}")
         self.state.wake_device_waits(name)
         await asyncio.gather(published, subscribed)
 
@@ -256,7 +256,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         self.state.mark_device_removed(name)
         erasure_done = self._erase(self._add_own_topics_under(to_erase, topics.device_root(name)))
         await self._wait_for_broker(
-            self._tasks.start(self._unsubscribe_commands_after(name, erasure_done), f"remove {name}")
+            self._tasks.start_task(self._unsubscribe_commands_after(name, erasure_done), f"remove {name}")
         )
 
     async def create_control(  # pylint: disable=too-many-arguments,too-many-locals
@@ -387,7 +387,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
     async def remove_driver_devices(self) -> list[str]:
         self._raise_if_closed()
         # A create_device cancelled just before, as in a service that stops, still makes its device own
-        creations = self._tasks.named(_CREATION_TASK_PREFIX)
+        creations = self._tasks.get_tasks_with_prefix(_CREATION_TASK_PREFIX)
         if creations:
             await asyncio.wait(creations)
 

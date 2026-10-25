@@ -178,12 +178,12 @@ class Client:  # pylint: disable=too-many-instance-attributes
         self._subscriber.mark_closing()
         self._publisher.mark_closing()
         await self._listener_registry.stop_all(spare=caller)
-        await self._service_tasks.cancel_all(spare=caller)
+        await self._service_tasks.cancel_all_tasks(spare=caller)
         self._subscriber.fail_waits()
         await self._device_sync.close()
         await self._stop_sessions()
 
-    def start_task(self, coro: Coroutine[Any, Any, Any], name: Optional[str] = None) -> asyncio.Task:
+    def start_task(self, coroutine: Coroutine[Any, Any, Any], name: Optional[str] = None) -> asyncio.Task:
         """
         Run work in the background. The client keeps the task, logs its error and cancels it on close.
 
@@ -191,9 +191,9 @@ class Client:  # pylint: disable=too-many-instance-attributes
             ClientClosedError: the client is closed.
         """
         if self._closed:
-            coro.close()
+            coroutine.close()
             raise ClientClosedError("the client is closed")
-        return self._service_tasks.start(coro, name or getattr(coro, "__qualname__", "task"))
+        return self._service_tasks.start_task(coroutine, name or getattr(coroutine, "__qualname__", "task"))
 
     def on_connection_change(self, handler: ConnectionHandler) -> ConnectionHandler:
         """
