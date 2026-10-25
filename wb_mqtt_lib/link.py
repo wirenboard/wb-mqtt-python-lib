@@ -226,11 +226,13 @@ def check_payload(payload: Payload) -> None:
     Reject a payload paho does not take, and bool, which paho would send as «True».
 
     Raises:
-        TypeError: the payload is not str, bytes, int, float or None, it is a bool, or a str that is not
-            valid UTF-8.
+        TypeError: the payload is not str, bytes, bytearray, int, float or None, it is a bool, or a str
+            that is not valid UTF-8.
     """
     if not (is_int(payload) or isinstance(payload, (str, bytes, bytearray, float, type(None)))):
-        raise TypeError(f"payload must be str, bytes, int, float or None, got {type(payload).__name__}")
+        raise TypeError(
+            f"payload must be str, bytes, bytearray, int, float or None, got {type(payload).__name__}"
+        )
     if isinstance(payload, str) and not is_utf8_text(payload):
         raise TypeError("payload is not valid UTF-8")
 

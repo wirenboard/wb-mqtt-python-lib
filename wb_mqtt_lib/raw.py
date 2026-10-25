@@ -1,5 +1,5 @@
 """
-Raw topics outside the convention. The service is responsible for what it reads and writes here.
+client.raw, for MQTT topics outside the Wiren Board convention.
 """
 
 import asyncio
@@ -46,15 +46,13 @@ class RawTopics:
         self, topic_filter: str, handler: MessageHandler, qos: int = SUBSCRIPTION_QOS
     ) -> MessageHandler:
         """
-        Call handler(message) for every message under the filter. Retained messages arrive at once and again
+        Call handler(message) for every message under the filter, the retained ones first and again
         after every reconnect.
 
-        Every handler gets what the broker keeps under its filter when it subscribes, also a second handler
-        on a filter that is subscribed already, that one gets it from the subscription without the broker.
-        One handler may listen to several filters, it has one queue for all of them and is called once
-        for a message that matches more than one. Returns once the retained messages are queued
-        for the handler, without a link at once, and they come after reconnect. The same handler on the same
-        filter again adds nothing and returns once the retained messages of the first call are queued.
+        Returns once the retained messages are queued for the handler, without a link at once. A second
+        handler on the same filter gets them too. One handler may listen to several filters with one queue,
+        a message that matches several of them comes once. The same handler on the same filter again adds
+        nothing.
 
         Args:
             topic_filter: MQTT filter, + and # allowed.
@@ -141,7 +139,7 @@ class RawTopics:
 
         Raises:
             ValueError: the broker would refuse the topic or the QoS.
-            TypeError: the payload is a bool or not str, bytes, int, float or None.
+            TypeError: the payload is a bool or not str, bytes, bytearray, int, float or None.
             BrokerDisconnectedError: an event while the broker link is down, or the link is lost
                 or the broker does not confirm it in 5 s.
             ClientClosedError: the client is closed or closes while waiting.
