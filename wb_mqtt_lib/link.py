@@ -38,9 +38,10 @@ SEND_WINDOW = 20
 # Every handler publishes on its own, a burst easily has dozens of publications waiting for the broker,
 # and aiomqtt warns about each one above this number
 PENDING_CALLS_WARNING = 10_000
-# MQTT reason codes of a rejected login: bad user name or password, not authorized
+# MQTT reason codes of a rejected login, a bad user name or password and not authorized
 _LOGIN_REJECTED_CODES = (134, 135)
 
+# What a publication takes as its payload
 Payload = Union[str, bytes, bytearray, int, float, None]
 # Called for every message from the broker with its topic, payload, retain flag as published, QoS and
 # the numbers of the subscriptions it came for, None when the broker sent none
@@ -99,7 +100,7 @@ class Connection:
     """
 
     def __init__(self, address: BrokerAddress, identifier: str) -> None:
-        self._client = aiomqtt.Client(
+        self._mqtt_client = aiomqtt.Client(
             address.hostname,
             address.port,
             username=address.username,
@@ -113,7 +114,7 @@ class Connection:
             timeout=ACK_TIMEOUT_S,
             logger=_logger,
         )
-        self._client.pending_calls_threshold = PENDING_CALLS_WARNING
+        self._mqtt_client.pending_calls_threshold = PENDING_CALLS_WARNING
 
     async def __aenter__(self) -> "Connection":
         """
@@ -124,7 +125,7 @@ class Connection:
             LinkLost: the broker did not answer or refused the connection.
         """
         try:
-            await self._client.__aenter__()
+            await self._mqtt_client.__aenter__()
         except aiomqtt.MqttError as error:
             if _is_login_rejected(error):
                 raise LoginRejected(str(error)) from error
@@ -133,7 +134,7 @@ class Connection:
 
     async def __aexit__(self, *exc_info: Any) -> None:
         try:
-            await self._client.__aexit__(*exc_info)
+            await self._mqtt_client.__aexit__(*exc_info)
         except aiomqtt.MqttError as error:
             raise LinkLost(str(error)) from error
 
@@ -146,7 +147,7 @@ class Connection:
             LinkLost: paho refused the packet, the connection is broken.
         """
         try:
-            await self._client.publish(topic, payload, qos=qos, retain=retain)
+            await self._mqtt_client.publish(topic, payload, qos=qos, retain=retain)
         except aiomqtt.MqttError as error:
             raise _as_link_error(error) from error
 
@@ -162,11 +163,11 @@ class Connection:
         """
         try:
             if number is None:
-                await self._client.subscribe(topic_filter, qos=qos)
+                await self._mqtt_client.subscribe(topic_filter, qos=qos)
                 return
             properties = Properties(PacketTypes.SUBSCRIBE)
             properties.SubscriptionIdentifier = number
-            await self._client.subscribe(
+            await self._mqtt_client.subscribe(
                 topic_filter,
                 options=SubscribeOptions(qos=qos, retainAsPublished=True),
                 properties=properties,
@@ -182,23 +183,24 @@ class Connection:
             LinkError: no UNSUBACK in time or the connection is broken.
         """
         try:
-            await self._client.unsubscribe(topic_filter)
+            await self._mqtt_client.unsubscribe(topic_filter)
         except aiomqtt.MqttError as error:
             raise _as_link_error(error) from error
 
-    async def read_messages(self, handle: PacketHandler) -> None:
+    async def read_messages(self, handle_message: PacketHandler) -> None:
         """
-        Hand every message from the broker to handle until the connection ends.
+        Hand every message from the broker to handle_message until the connection ends.
 
         Raises:
             LinkLost: the connection ended.
         """
         try:
-            async for message in self._client.messages:
+            async for message in self._mqtt_client.messages:
+                # The rest of the library takes the payload as bytes
                 payload = message.payload
                 if not isinstance(payload, (bytes, bytearray)):
                     payload = b"" if payload is None else str(payload).encode()
-                handle(
+                handle_message(
                     message.topic.value,
                     bytes(payload),
                     message.retain,
