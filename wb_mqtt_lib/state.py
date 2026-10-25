@@ -54,7 +54,10 @@ class Ownership(enum.Enum):
     REMOVED = "removed"
 
 
+# A wait for a value, the condition it waits for and the future it ends
 ValueWait = tuple[Callable[[Any], bool], asyncio.Future]
+# What the listeners of a device itself see, whether it exists, its title and its driver
+_DeviceState = tuple[bool, TranslatedTitle, Optional[str]]
 
 
 class ControlRecord:  # pylint: disable=too-many-instance-attributes,too-few-public-methods
@@ -65,8 +68,8 @@ class ControlRecord:  # pylint: disable=too-many-instance-attributes,too-few-pub
     def __init__(self, listeners: ListenerSet) -> None:
         self.meta: Optional[ControlMeta] = None
         self.topics: Optional[ControlTopics] = None
-        # Own control: the last published payload.
-        # Foreign: the last received one, also before the meta arrives. A new type reads it again.
+        # The last payload, published for an own control and received for a foreign one, also before
+        # the meta arrives. A new type reads it again.
         self.payload: Optional[str] = None
         self.value: Any = None
         self.error = ControlErrorFlags.NONE
@@ -156,10 +159,14 @@ class State:  # pylint: disable=too-many-public-methods
                 count += len(control.value_waits) + len(control.exists_waits)
         return count
 
-    def device(self, name: str) -> Optional[DeviceRecord]:
+    # ------------------------------------------------------------
+    # Records and names of devices and controls
+    # ------------------------------------------------------------
+
+    def get_device(self, name: str) -> Optional[DeviceRecord]:
         return self._devices.get(name)
 
-    def control(self, device_name: str, control_name: str) -> Optional[ControlRecord]:
+    def get_control(self, device_name: str, control_name: str) -> Optional[ControlRecord]:
         device = self._devices.get(device_name)
         return device.controls.get(control_name) if device else None
 
@@ -190,11 +197,13 @@ class State:  # pylint: disable=too-many-public-methods
             return []
         return [name for name, control in device.controls.items() if control.exists]
 
-    def is_own(self, device_name: str) -> bool:
+    def is_own_device(self, device_name: str) -> bool:
         device = self._devices.get(device_name)
         return device is not None and device.ownership is Ownership.OWN
 
-    # Waits
+    # ------------------------------------------------------------
+    # Waits until a device or a control appears or a value fits
+    # ------------------------------------------------------------
 
     async def wait_device_exists(self, device_name: str, timeout: float) -> None:
         """
@@ -215,11 +224,16 @@ class State:  # pylint: disable=too-many-public-methods
         finally:
             self.drop_control_if_unused(device_name, control_name)
 
-    async def wait_value(self, device_name: str, control_name: str, expected: Any, timeout: float) -> Any:
+    async def wait_control_value(
+        self, device_name: str, control_name: str, expected: Any, timeout: float
+    ) -> Any:
+        # The value fits already
         control = self.ensure_control(device_name, control_name)
         predicate = expected if callable(expected) else (lambda value: value == expected)
         if control.value is not None and predicate(control.value):
             return control.value
+
+        # Otherwise _wake_value_waits ends the wait when a value that fits comes
         value_wait = (predicate, asyncio.get_running_loop().create_future())
         control.value_waits.append(value_wait)
         try:
@@ -240,7 +254,9 @@ class State:  # pylint: disable=too-many-public-methods
                 if not future.done():
                     future.set_exception(error)
 
-    # Listeners
+    # ------------------------------------------------------------
+    # Event handlers
+    # ------------------------------------------------------------
 
     def add_control_listener(self, device_name: str, control_name: str, kind: str, handler: Handler) -> None:
         """
@@ -252,34 +268,37 @@ class State:  # pylint: disable=too-many-public-methods
             logger.debug(
                 "Control %s/%s does not exist yet, its %s handler waits", device_name, control_name, kind
             )
-        control.listeners.add(kind, handler, self._initial_calls(device_name, control_name, kind))
+        control.listeners.add(kind, handler, self._get_initial_calls(device_name, control_name, kind))
 
     def add_device_listener(self, device_name: str, kind: str, handler: Handler) -> None:
         """
         Register a handler of an event of the device itself or of any of its controls.
         """
+        # Events of the device itself
         if kind in _DEVICE_SELF_EVENTS:
             check_handler_arguments(handler, _HANDLER_ARGUMENTS[kind], f"on_{kind}")
             device = self.ensure_device(device_name)
-            initial: list[tuple] = []
+            initial_calls: list[tuple] = []
             if device.exists and kind == "added":
-                initial = [(self._make_device(device_name),)]
+                initial_calls = [(self._make_device(device_name),)]
             elif device.exists and kind == "error":
-                initial = [(self._make_device(device_name), device.error, None)]
-            device.listeners.add(kind, handler, initial)
+                initial_calls = [(self._make_device(device_name), device.error, None)]
+            device.listeners.add(kind, handler, initial_calls)
             return
+
+        # Events of every control of the device
         control_kind = _CONTROL_EVENT_OF[kind]
         check_handler_arguments(handler, _HANDLER_ARGUMENTS[control_kind], f"on_{kind}")
         device = self.ensure_device(device_name)
-        initial = [
+        initial_calls = [
             call
             for control_name in self.existing_control_names(device_name)
-            for call in self._initial_calls(device_name, control_name, control_kind)
+            for call in self._get_initial_calls(device_name, control_name, control_kind)
         ]
-        device.listeners.add(kind, handler, initial)
+        device.listeners.add(kind, handler, initial_calls)
 
     def remove_control_listener(self, device_name: str, control_name: str, handler: Handler) -> None:
-        control = self.control(device_name, control_name)
+        control = self.get_control(device_name, control_name)
         if control is not None:
             control.listeners.remove(handler)
             self.drop_control_if_unused(device_name, control_name)
@@ -289,29 +308,37 @@ class State:  # pylint: disable=too-many-public-methods
         if device is not None:
             device.listeners.remove(handler)
 
-    # Changes
+    # ------------------------------------------------------------
+    # Changes from the broker and from own operations, with their events and waits
+    # ------------------------------------------------------------
 
     def mark_control_added(self, device_name: str, control_name: str, meta: ControlMeta) -> None:
         """
         The control got its meta. A value and an error that came before the meta reach the listeners now.
         """
+        # State before the change, for _announce_device_change
         control = self.ensure_control(device_name, control_name)
-        before = self._device_state(device_name)
+        state_before = self._get_device_state(device_name)
+
+        # The record gets the meta. A press is an event, a value kept for a pushbutton is a leftover.
         if meta.control_type == ControlType.PUSHBUTTON:
-            # A press is an event, a value kept for a pushbutton is a leftover
             control.payload = None
         control.meta = meta
         control.generation += 1
+
+        # The waits end, the listeners learn the control appeared and maybe its device too
         for future in control.exists_waits:
             if not future.done():
                 future.set_result(None)
-        self._announce_device_change(device_name, before)
+        self._announce_device_change(device_name, state_before)
         self._emit_control_event(device_name, control_name, "added")
         self.wake_device_waits(device_name)
+
+        # An error and a value that came before the meta
         if control.error:
             self._emit_control_event(device_name, control_name, "error", control.error, None)
         if control.payload is not None:
-            self.set_value(device_name, control_name, from_payload(meta, control.payload))
+            self.set_control_value(device_name, control_name, from_payload(meta, control.payload))
 
     def set_control_meta(self, device_name: str, control_name: str, meta: ControlMeta) -> None:
         """
@@ -335,22 +362,29 @@ class State:  # pylint: disable=too-many-public-methods
         """
         The control is gone. The record is dropped unless listeners or waits hang on it.
         """
+        # State before the change, for _announce_device_change
         device = self._devices[device_name]
         control = device.controls[control_name]
-        before = self._device_state(device_name)
+        state_before = self._get_device_state(device_name)
+
+        # The record is cleared
         control.meta = None
         control.payload = None
         control.value = None
         control.error = ControlErrorFlags.NONE
         control.generation += 1
+
+        # The listeners of the control and of its device learn it is gone
         if control.listeners:
             logger.debug(
                 "Control %s/%s is removed, its handlers wait for it to appear", device_name, control_name
             )
         self._emit_control_event(device_name, control_name, "removed")
+
+        # The record stays only for listeners and waits, the device may go with the control
         if control.unused:
             del device.controls[control_name]
-        self._announce_device_change(device_name, before)
+        self._announce_device_change(device_name, state_before)
 
     def drop_control_if_unused(self, device_name: str, control_name: str) -> None:
         """
@@ -361,25 +395,25 @@ class State:  # pylint: disable=too-many-public-methods
         if control is not None and control.unused:
             del device.controls[control_name]
 
-    def set_value(self, device_name: str, control_name: str, value: Any) -> None:
+    def set_control_value(self, device_name: str, control_name: str, value: Any) -> None:
         control = self._devices[device_name].controls[control_name]
         if value == control.value or (_is_nan(value) and _is_nan(control.value)):
             return
         previous = control.value
         control.value = value
         if value is None:
-            # A cleared value is not an event, removal comes with the meta
+            # Cleared without an event, a handler never gets None. Removal comes with the meta.
             return
         self._emit_control_event(device_name, control_name, "value", value, previous)
         _wake_value_waits(control)
 
-    def emit_press(self, device_name: str, control_name: str) -> None:
+    def emit_pushbutton_press(self, device_name: str, control_name: str) -> None:
         """
         A pushbutton was pressed. Every press is an event, the value stays None.
         """
         self._emit_control_event(device_name, control_name, "value", True, None)
 
-    def set_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
+    def set_control_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
         control = self._devices[device_name].controls[control_name]
         if error == control.error:
             return
@@ -401,14 +435,19 @@ class State:  # pylint: disable=too-many-public-methods
         )
 
     def set_device_meta(self, device_name: str, meta: DeviceMeta) -> None:
+        # State before the change, for _announce_device_change
         device = self.ensure_device(device_name)
-        before = self._device_state(device_name)
+        state_before = self._get_device_state(device_name)
+
+        # The meta. A device the service removed reads as foreign once a meta comes for it.
         device.has_meta = True
         device.title = meta.title
         device.driver = meta.driver
         if device.ownership is Ownership.REMOVED:
             device.ownership = Ownership.FOREIGN
-        self._announce_device_change(device_name, before)
+
+        # The listeners learn what changed, the waits for the device end
+        self._announce_device_change(device_name, state_before)
         self.wake_device_waits(device_name)
 
     def set_device_error(self, device_name: str, error: ControlErrorFlags) -> None:
@@ -424,18 +463,24 @@ class State:  # pylint: disable=too-many-public-methods
         """
         The JSON meta of the device is erased, its title and driver go with it.
         """
+        # State before the change, for _announce_device_change
         device = self._devices[device_name]
-        before = self._device_state(device_name)
+        state_before = self._get_device_state(device_name)
+
+        # The meta goes with its title and driver
         device.has_meta = False
         device.title = TranslatedTitle()
         device.driver = None
-        self._announce_device_change(device_name, before)
 
-    def make_own(self, device_name: str, title: TranslatedTitle, driver: str) -> None:
+        # The listeners learn what changed
+        self._announce_device_change(device_name, state_before)
+
+    def make_device_own(self, device_name: str, title: TranslatedTitle, driver: str) -> None:
         """
         The device becomes own. Nothing of the former owner stays, its controls are removed, values and
         errors of controls without meta and the error of the device are cleared.
         """
+        # Nothing of the former owner stays
         device = self._devices[device_name]
         for control_name in self.existing_control_names(device_name):
             self.mark_control_removed(device_name, control_name)
@@ -445,15 +490,21 @@ class State:  # pylint: disable=too-many-public-methods
             control.error = ControlErrorFlags.NONE
             self.drop_control_if_unused(device_name, control_name)
         self.set_device_error(device_name, ControlErrorFlags.NONE)
-        before = self._device_state(device_name)
+
+        # State before the change, for _announce_device_change
+        state_before = self._get_device_state(device_name)
+
+        # The device becomes own
         device.ownership = Ownership.OWN
         device.has_meta = True
         device.title = title
         device.driver = driver
         device.next_order = 1
-        self._announce_device_change(device_name, before)
 
-    def mark_removed(self, device_name: str) -> None:
+        # The listeners learn what changed
+        self._announce_device_change(device_name, state_before)
+
+    def mark_device_removed(self, device_name: str) -> None:
         """
         The service removed the own device, it reads like a foreign one from now on. Its controls go with
         on_removed, its error is cleared without on_error, then on_removed of the device tells it is gone.
@@ -473,37 +524,40 @@ class State:  # pylint: disable=too-many-public-methods
             if not future.done():
                 future.set_result(None)
 
-    def _initial_calls(self, device_name: str, control_name: str, kind: str) -> list[tuple]:
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
+
+    def _get_initial_calls(self, device_name: str, control_name: str, kind: str) -> list[tuple]:
         """
         Calls that describe the current state to a handler registered now.
 
         A known value implies the control exists, the value is cleared when the meta goes.
         """
-        control = self.control(device_name, control_name)
+        control = self.get_control(device_name, control_name)
         if control is None or not control.exists:
             return []
-        handle = self._make_control(device_name, control_name)
+        control_object = self._make_control(device_name, control_name)
         if kind == "added":
-            return [(handle,)]
+            return [(control_object,)]
         if kind == "value" and control.value is not None:
-            return [(handle, control.value, None)]
+            return [(control_object, control.value, None)]
         if kind == "error":
-            return [(handle, control.error, None)]
+            return [(control_object, control.error, None)]
         return []
 
-    def _device_state(self, device_name: str) -> tuple[bool, TranslatedTitle, Optional[str]]:
+    def _get_device_state(self, device_name: str) -> _DeviceState:
         device = self._devices[device_name]
         return device.exists, device.title, device.driver
 
-    def _announce_device_change(
-        self, device_name: str, before: tuple[bool, TranslatedTitle, Optional[str]]
-    ) -> None:
+    def _announce_device_change(self, device_name: str, state_before: _DeviceState) -> None:
         """
         Tell the listeners of the device itself what changed against the state before a change.
 
         The device appeared or went, or its title or driver changed while it exists.
         """
-        existed, title, driver = before
+        # What changed for the listeners of the device
+        existed, title, driver = state_before
         device = self._devices[device_name]
         if device.exists and not existed:
             kind = "added"
@@ -513,6 +567,8 @@ class State:  # pylint: disable=too-many-public-methods
             kind = "meta"
         else:
             return
+
+        # The event, and on_error too for a device that appears with an error
         if device.listeners.has(kind):
             device.listeners.push(kind, (self._make_device(device_name),))
         if kind == "added" and device.error and device.listeners.has("error"):

@@ -61,7 +61,7 @@ class Control:  # pylint: disable=too-many-public-methods
 
     @property
     def _record(self) -> Optional[ControlRecord]:
-        return self._device_sync.state.control(self.device.name, self.name)
+        return self._device_sync.state.get_control(self.device.name, self.name)
 
     @property
     def full_name(self) -> str:
@@ -203,7 +203,7 @@ class Control:  # pylint: disable=too-many-public-methods
             TimeoutError: the value did not come in time.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        return await self._device_sync.wait_value(self.device.name, self.name, expected, timeout)
+        return await self._device_sync.wait_control_value(self.device.name, self.name, expected, timeout)
 
     async def set_value(self, value: Any) -> None:
         """
@@ -226,7 +226,7 @@ class Control:  # pylint: disable=too-many-public-methods
                 or the link is lost or the broker does not confirm it in 5 s.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.set_value(self.device.name, self.name, value)
+        await self._device_sync.set_control_value(self.device.name, self.name, value)
 
     async def set_error(self, error: ControlErrorFlags) -> None:
         """
@@ -238,7 +238,7 @@ class Control:  # pylint: disable=too-many-public-methods
             ControlMissingError: the control or its device does not exist.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.set_error(self.device.name, self.name, error)
+        await self._device_sync.set_control_error(self.device.name, self.name, error)
 
     async def update_meta(self, **fields: Any) -> None:
         """
@@ -305,7 +305,7 @@ class Device:  # pylint: disable=too-many-public-methods
 
     @property
     def _record(self) -> Optional[DeviceRecord]:
-        return self._device_sync.state.device(self.name)
+        return self._device_sync.state.get_device(self.name)
 
     @property
     def exists(self) -> bool:
@@ -317,7 +317,7 @@ class Device:  # pylint: disable=too-many-public-methods
         """
         True for a device this client created and still publishes.
         """
-        return self._device_sync.state.is_own(self.name)
+        return self._device_sync.state.is_own_device(self.name)
 
     @property
     def title(self) -> TranslatedTitle:

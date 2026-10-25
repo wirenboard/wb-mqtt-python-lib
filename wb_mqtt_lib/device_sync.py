@@ -134,10 +134,12 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         self._raise_if_closed()
         await self.state.wait_control_exists(device_name, control_name, timeout)
 
-    async def wait_value(self, device_name: str, control_name: str, expected: Any, timeout: float) -> Any:
+    async def wait_control_value(
+        self, device_name: str, control_name: str, expected: Any, timeout: float
+    ) -> Any:
         self._raise_if_closed()
         self._check_device_watched(device_name)
-        return await self.state.wait_value(device_name, control_name, expected, timeout)
+        return await self.state.wait_control_value(device_name, control_name, expected, timeout)
 
     async def get_device_names(self) -> list[str]:
         self._raise_if_closed()
@@ -208,7 +210,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         # The name becomes own unless another create_device took it meanwhile
         device = self.state.ensure_device(name)
         _check_not_created(name, device)
-        self.state.make_own(name, title, self._driver)
+        self.state.make_device_own(name, title, self._driver)
         device.topics = device_topics
 
         # The meta goes out, the commands get subscribed, waits for the device end
@@ -251,7 +253,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         to_erase.append(device.topics.meta)
 
         # Removed before the erasure, so its echoes apply like those of a foreign device
-        self.state.mark_removed(name)
+        self.state.mark_device_removed(name)
         erasure_done = self._erase(self._add_own_topics_under(to_erase, topics.device_root(name)))
         await self._wait_for_broker(
             self._tasks.start(self._unsubscribe_commands_after(name, erasure_done), f"remove {name}")
@@ -274,7 +276,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             expected = [item.value for item in ControlType]
             raise ValueError(f"unknown control type {control_type!r}, expected one of {expected}") from None
         device = self._require_own_device(device_name)
-        existing = self.state.control(device_name, control_name)
+        existing = self.state.get_control(device_name, control_name)
         if existing is not None and existing.exists:
             raise ValueError(f"control {device_name}/{control_name} exists already")
 
@@ -300,17 +302,17 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         messages: list[tuple[str, Optional[str]]] = [(control.topics.meta, meta.to_json())]
         if payload is not None:
             control.payload = payload
-            self.state.set_value(device_name, control_name, normalized_value)
+            self.state.set_control_value(device_name, control_name, normalized_value)
             # Together with the meta, a reader needs no order between them
             messages.append((control.topics.value, payload))
         await self._wait_for_broker(self._publisher.queue_retained(messages))
 
-    async def set_value(self, device_name: str, control_name: str, value: Any) -> None:
+    async def set_control_value(self, device_name: str, control_name: str, value: Any) -> None:
         self._raise_if_closed()
         control = self._require_existing_control(device_name, control_name)
 
         # Foreign control, a command to /on
-        if not self.state.is_own(device_name):
+        if not self.state.is_own_device(device_name):
             payload, _ = to_payload_and_value(control.meta, value)
             await self._publisher.publish(topics.control_command(device_name, control_name), payload, qos=1)
             return
@@ -321,8 +323,11 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             generation = control.generation
             await self._publisher.publish(control.topics.value, payload, qos=1)
             # A press that did not reach the broker is not an event, nor one of a button removed meanwhile
-            if self.state.control(device_name, control_name) is control and control.generation == generation:
-                self.state.emit_press(device_name, control_name)
+            if (
+                self.state.get_control(device_name, control_name) is control
+                and control.generation == generation
+            ):
+                self.state.emit_pushbutton_press(device_name, control_name)
             return
 
         # Own control of another type, the payload goes out only when it changed
@@ -333,19 +338,19 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             payload, normalized_value = to_payload_and_value(control.meta, value)
         changed = payload != control.payload
         control.payload = payload
-        self.state.set_value(device_name, control_name, normalized_value)
+        self.state.set_control_value(device_name, control_name, normalized_value)
         if changed:
             await self._publisher.publish(
                 control.topics.value, payload, qos=1, retain=True, wait_for_puback=False
             )
 
-    async def set_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
+    async def set_control_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
         _check_error_flags(error)
         self._require_own_device(device_name)
         control = self._require_existing_control(device_name, control_name)
         if error == control.error:
             return
-        self.state.set_error(device_name, control_name, error)
+        self.state.set_control_error(device_name, control_name, error)
         await self._publish_error(control.topics.error, error)
 
     async def set_device_error(self, name: str, error: ControlErrorFlags) -> None:
@@ -372,7 +377,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             # remove() of the device erased its controls already
             return
         self._require_own_device(device_name)
-        control = self.state.control(device_name, control_name)
+        control = self.state.get_control(device_name, control_name)
         if control is None or not control.exists:
             return
         to_erase = self._add_own_topics_under(_get_control_topics_to_erase(control), control.topics.value)
@@ -396,11 +401,11 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
 
         # Own devices through remove_device, then whatever is left under the name
         for name in names:
-            if self.state.is_own(name):
+            if self.state.is_own_device(name):
                 await self.remove_device(name)
             leftovers = await self._subscriber.read_retained([topics.device_tree(name)])
             # A device the service created meanwhile is not a leftover
-            if leftovers and not self.state.is_own(name):
+            if leftovers and not self.state.is_own_device(name):
                 await self._wait_for_broker(self._erase_leftovers(leftovers))
         return names
 
@@ -456,7 +461,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         topic = topics.parse(message.topic)
         if topic is None or topic.kind is topics.TopicKind.COMMAND:
             return
-        device = self.state.device(topic.device)
+        device = self.state.get_device(topic.device)
         if device is None or device.ownership is Ownership.OWN:
             return
         _apply_foreign_message(self.state, topic, message.payload.decode("utf-8", "replace"), message.retain)
@@ -464,7 +469,11 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
     def _on_command(self, message: Message) -> None:
         # Commands to own devices only
         topic = topics.parse(message.topic)
-        if topic is None or topic.kind is not topics.TopicKind.COMMAND or not self.state.is_own(topic.device):
+        if (
+            topic is None
+            or topic.kind is not topics.TopicKind.COMMAND
+            or not self.state.is_own_device(topic.device)
+        ):
             return
 
         # A command left from the past is not executed, it is erased like libwbmqtt1 does.
@@ -476,7 +485,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             return
 
         # Skipped without a control, a payload or a handler
-        control = self.state.control(topic.device, topic.control)
+        control = self.state.get_control(topic.device, topic.control)
         payload = message.payload.decode("utf-8", "replace")
         if control is None or not control.exists:
             logger.debug("Command to %s/%s skipped, the control does not exist", topic.device, topic.control)
@@ -508,13 +517,13 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         self._raise_if_closed()
         if self._is_removed(name):
             raise ControlMissingError(f"device {name} is removed")
-        device = self.state.device(name)
+        device = self.state.get_device(name)
         if device is None or device.ownership is not Ownership.OWN:
             raise NotOwnError(f"{name} is not a device of this client")
         return device
 
     def _is_removed(self, name: str) -> bool:
-        device = self.state.device(name)
+        device = self.state.get_device(name)
         return device is not None and device.ownership is Ownership.REMOVED
 
     def _check_takes_commands(self, name: str) -> None:
@@ -524,7 +533,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         Raises:
             NotOwnError: the device is foreign.
         """
-        if not (self.state.is_own(name) or self._is_removed(name)):
+        if not (self.state.is_own_device(name) or self._is_removed(name)):
             raise NotOwnError(f"{name} is not a device of this client")
 
     def _check_device_watched(self, name: str) -> None:
@@ -535,7 +544,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             RuntimeError: the device is foreign and the client has not read it through get_device
                 or get_control.
         """
-        device = self.state.device(name)
+        device = self.state.get_device(name)
         if device is not None and device.ownership is not Ownership.FOREIGN:
             return
         if name not in self._device_watches:
@@ -544,7 +553,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             )
 
     def _require_existing_control(self, device_name: str, control_name: str) -> ControlRecord:
-        control = self.state.control(device_name, control_name)
+        control = self.state.get_control(device_name, control_name)
         if control is None or not control.exists:
             raise ControlMissingError(f"{device_name}/{control_name} does not exist")
         return control
@@ -591,7 +600,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         """
         await erasure_done
         await self._subscriber.unsubscribe(
-            topics.command_filter(name), self._on_command, keep=lambda: self.state.is_own(name)
+            topics.command_filter(name), self._on_command, keep=lambda: self.state.is_own_device(name)
         )
 
     async def _wait_for_broker(self, pending: asyncio.Future) -> None:
@@ -696,7 +705,7 @@ def _apply_foreign_message(state: State, topic: topics.ParsedTopic, payload: str
 
 def _apply_control_meta(state: State, device_name: str, control_name: str, payload: str) -> None:
     # An empty meta removes the control
-    control = state.control(device_name, control_name)
+    control = state.get_control(device_name, control_name)
     if not payload:
         if control is not None and control.exists:
             state.mark_control_removed(device_name, control_name)
@@ -717,18 +726,18 @@ def _apply_control_meta(state: State, device_name: str, control_name: str, paylo
     elif meta != control.meta:
         state.set_control_meta(device_name, control_name, meta)
     if error is not None:
-        state.set_error(device_name, control_name, error)
+        state.set_control_error(device_name, control_name, error)
 
 
 def _apply_control_error(state: State, device_name: str, control_name: str, payload: str) -> None:
     # A payload without the letters r, w and p is no error either
     error = ControlErrorFlags.from_mqtt(payload)
     # No error of a control the state does not know, nothing to keep
-    if state.control(device_name, control_name) is None and not error:
+    if state.get_control(device_name, control_name) is None and not error:
         return
 
     state.ensure_control(device_name, control_name)
-    state.set_error(device_name, control_name, error)
+    state.set_control_error(device_name, control_name, error)
     # A cleared error may leave a record with nothing in it
     if not error:
         state.drop_control_if_unused(device_name, control_name)
@@ -736,7 +745,7 @@ def _apply_control_error(state: State, device_name: str, control_name: str, payl
 
 def _apply_value(state: State, device_name: str, control_name: str, payload: str, retain: bool) -> None:
     # A value may come before the meta, the record of the control keeps it until then
-    control = state.control(device_name, control_name)
+    control = state.get_control(device_name, control_name)
     if control is None:
         if not payload:
             return
@@ -745,13 +754,15 @@ def _apply_value(state: State, device_name: str, control_name: str, payload: str
     # A press is an event. A retained message here is a leftover, not a press.
     if control.meta is not None and control.meta.control_type == ControlType.PUSHBUTTON:
         if payload and not retain:
-            state.emit_press(device_name, control_name)
+            state.emit_pushbutton_press(device_name, control_name)
         return
 
     # The payload is kept, the value is parsed by the meta, now or once the meta comes
     control.payload = payload or None
     if control.meta is not None:
-        state.set_value(device_name, control_name, from_payload(control.meta, payload) if payload else None)
+        state.set_control_value(
+            device_name, control_name, from_payload(control.meta, payload) if payload else None
+        )
     elif not payload:
         state.drop_control_if_unused(device_name, control_name)
 
@@ -774,7 +785,7 @@ def _build_snapshot(name: str, retained: dict[str, bytes]) -> Optional[DeviceSna
     Device from the retained topics of one name, as a reader sees it. None when they make no device.
     """
     state = _build_state(retained)
-    device = state.device(name)
+    device = state.get_device(name)
     if device is None or not device.exists:
         return None
     controls = {
