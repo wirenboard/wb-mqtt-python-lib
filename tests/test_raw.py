@@ -23,18 +23,21 @@ from wb_mqtt_lib import subscriber as subscriber_module
 
 async def test_subscribe_gets_retained_at_once_then_live(client: Client) -> None:
     """
-    A raw subscription gets what lies in the broker, then live messages.
+    A raw subscription gets what lies in the broker, then live messages, each with the retain flag it was
+    published with.
     """
     await client.raw.publish("zigbee2mqtt/bridge/state", '{"state": "online"}', retain=True)
     received: list[Message] = []
 
     await client.raw.subscribe("zigbee2mqtt/#", received.append)
     await client.raw.publish("zigbee2mqtt/bridge/request/permit_join", '{"time": 254}')
+    await client.raw.publish("zigbee2mqtt/bridge/state", '{"state": "offline"}', retain=True)
 
-    await wait_until(lambda: len(received) == 2)
+    await wait_until(lambda: len(received) == 3)
     assert [(m.topic, m.retain) for m in received] == [
         ("zigbee2mqtt/bridge/state", True),
         ("zigbee2mqtt/bridge/request/permit_join", False),
+        ("zigbee2mqtt/bridge/state", True),
     ]
 
 
@@ -269,7 +272,7 @@ async def test_raw_handler_over_a_read_device_gets_no_repeats_and_the_device_no_
     await asyncio.sleep(0.2)
     assert presses == [True]
     assert [(m.topic, m.payload, m.retain) for m in seen] == [
-        ("/devices/dev/controls/temp", b"2", False),
+        ("/devices/dev/controls/temp", b"2", True),
         ("/devices/dev/controls/button", b"1", False),
     ]
 

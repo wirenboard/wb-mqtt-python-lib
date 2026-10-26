@@ -119,9 +119,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
 
     async def _subscribe_device(self, name: str) -> None:
         try:
-            await self._subscriber.subscribe(
-                topics.watch_filters(name), self._on_device_message, retain_as_published=True
-            )
+            await self._subscriber.subscribe(topics.watch_filters(name), self._on_device_message)
         except BaseException:
             # Undo the subscription, the next call subscribes again
             for topic_filter in topics.watch_filters(name):
@@ -592,9 +590,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
 
     async def _subscribe_commands(self, name: str) -> None:
         try:
-            await self._subscriber.subscribe(
-                [topics.command_filter(name)], self._on_command, retain_as_published=True
-            )
+            await self._subscriber.subscribe([topics.command_filter(name)], self._on_command)
         except (BrokerDisconnectedError, ClientClosedError):
             # Without a link it is subscribed all the same, on close it does not matter
             pass

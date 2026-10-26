@@ -353,19 +353,19 @@ async def test_value_with_precision_changes_locally_also_when_its_payload_stays(
     watcher = await connect("precision-watcher")
     value_topic = "/devices/precision_dev/controls/level"
     barrier_topic = "precision-test/barrier"
-    retained: list[bytes] = []
-    publications: list[bytes] = []
+    # The first payload is the state at subscription, the rest are publications
+    payloads: list[bytes] = []
     barriers: list[bytes] = []
 
     async def observe(message: Message) -> None:
         if message.topic == value_topic:
-            (retained if message.retain else publications).append(message.payload)
+            payloads.append(message.payload)
         else:
             barriers.append(message.payload)
 
     await watcher.raw.subscribe(value_topic, observe)
     await watcher.raw.subscribe(barrier_topic, observe)
-    await wait_until(lambda: retained == [b"21.5"])
+    await wait_until(lambda: payloads == [b"21.5"])
 
     async def settle(token: bytes) -> None:
         await client.raw.publish(barrier_topic, token)
@@ -375,15 +375,15 @@ async def test_value_with_precision_changes_locally_also_when_its_payload_stays(
     await wait_until(lambda: events[-1:] == [(21.53, 21.54)])
     await settle(b"same-payload")
     assert level.value == 21.53
-    assert not publications
+    assert payloads == [b"21.5"]
 
     await level.set_value(21.53)
     await settle(b"same-value")
     assert events == [(21.54, None), (21.53, 21.54)]
-    assert not publications
+    assert payloads == [b"21.5"]
 
     await level.set_value(21.43)
     await wait_until(lambda: events[-1:] == [(21.43, 21.53)])
     await settle(b"changed-payload")
     assert level.value == 21.43
-    assert publications == [b"21.4"]
+    assert payloads == [b"21.5", b"21.4"]
