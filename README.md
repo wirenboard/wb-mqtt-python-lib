@@ -63,16 +63,16 @@ async def run() -> None:
                 "threshold",
                 control_type=ControlType.RANGE,
                 title={"en": "Threshold", "ru": "Порог"},
-                minimum=THRESHOLD_MIN,
-                maximum=THRESHOLD_MAX,
                 value=2,
+                maximum=THRESHOLD_MAX,
+                minimum=THRESHOLD_MIN,
             )
             alarm = await device.create_control(
                 "alarm",
                 control_type=ControlType.ALARM,
                 title={"en": "High Load", "ru": "Высокая нагрузка"},
-                readonly=True,
                 value=False,
+                readonly=True,
             )
             # Контрол другого сервиса, его публикует wb-mqtt-metrics
             load = await client.get_control("metrics/load_average_1min")
@@ -337,10 +337,10 @@ cold = await device.create_control(
     "cold_water",
     control_type=ControlType.VALUE,
     title={"en": "Cold Water", "ru": "Холодная вода"},
-    units="m^3",
+    value=0.0,
     precision=0.001,
     readonly=True,
-    value=0.0,
+    units="m^3",
 )
 await cold.set_value(12.3456)  # уйдёт как «12.346»
 ```
@@ -362,14 +362,14 @@ await cold.set_value(12.3456)  # уйдёт как «12.346»
 - `name` — имя контрола.
 - `control_type` — тип контрола из `ControlType`.
 - `title` — заголовок, строка считается английской, на двух языках это `{"en": "...", "ru": "..."}`.
-- `units` — единицы измерения для `value` и `range`, строка.
+- `value` — начальное значение. Без него веб-интерфейс до первого `set_value` показывает заглушку, например `0` у числа и выключенный выключатель. У `pushbutton` значения нет, и любое `value` даёт `TypeError`.
+- `maximum`, `minimum` — пределы для `range` и `value`, конечные числа.
 - `precision` — положительное число. MQTT-значение публикуется с тем же числом знаков после запятой, что у `precision`, а веб-интерфейс использует его как шаг поля ввода.
-- `minimum`, `maximum` — пределы для `range` и `value`, конечные числа.
-- `order` — место на карточке, целое число, по умолчанию по порядку создания.
 - `readonly` — `True`, если контрол не принимает команды. Это подсказка веб-интерфейсу, он не даёт менять такой контрол. Команды в `/on` от правил и других сервисов всё равно приходят, и `on_command` их получает.
+- `units` — единицы измерения для `value` и `range`, строка.
+- `order` — место на карточке, целое число, по умолчанию по порядку создания.
 - `hidden` — `True`, чтобы спрятать контрол в веб-интерфейсе.
 - `enum` — названия значений, `{"0": {"en": "Idle", "ru": "Ожидание"}, "1": ...}`.
-- `value` — начальное значение. Без него веб-интерфейс до первого `set_value` показывает заглушку, например `0` у числа и выключенный выключатель. У `pushbutton` значения нет, и любое `value` даёт `TypeError`.
 
 Поля, которые к типу не относятся, например `minimum` у `text`, библиотека не отвергает и пишет в мету как есть. На значение они не влияют.
 
@@ -598,7 +598,7 @@ relay.on_value(toggle_back)
 
 ```python
 setpoint = await device.create_control(
-    "setpoint", control_type=ControlType.RANGE, minimum=0, maximum=50, value=20
+    "setpoint", control_type=ControlType.RANGE, value=20, maximum=50, minimum=0
 )
 
 

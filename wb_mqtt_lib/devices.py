@@ -434,15 +434,15 @@ class Device:  # pylint: disable=too-many-public-methods
         name: str,
         control_type: ControlType,
         title: TitleLike = None,
-        units: Optional[str] = None,
-        precision: Optional[float] = None,
-        minimum: Optional[float] = None,
+        value: Any = None,
         maximum: Optional[float] = None,
-        order: Optional[int] = None,
+        minimum: Optional[float] = None,
+        precision: Optional[float] = None,
         readonly: bool = False,
+        units: Optional[str] = None,
+        order: Optional[int] = None,
         hidden: bool = False,
         enum: Optional[Mapping[str, TitleLike]] = None,
-        value: Any = None,
     ) -> Control:
         """
         Only for an own device. Publish a control. Nothing is published unless the whole declaration is valid.
@@ -454,17 +454,17 @@ class Device:  # pylint: disable=too-many-public-methods
             name: control name.
             control_type: one of the current types of the convention, ControlType.SWITCH and so on.
             title: a string is English, or {"en": ..., "ru": ...}.
-            units: units of value and range.
+            value: initial value, see Control.set_value for the types. A pushbutton takes none.
+            maximum: upper limit of range and value.
+            minimum: lower limit of range and value.
             precision: step of a number, a positive number. The MQTT payload keeps as many decimals as
                 precision has, as in wb-rules, control.value and events keep the accepted number. homeui
                 uses it as the step of the input.
-            minimum: lower limit of range and value.
-            maximum: upper limit of range and value.
-            order: position on the card, by creation when not given.
             readonly: True when the control takes no commands.
+            units: units of value and range.
+            order: position on the card, by creation when not given.
             hidden: True to hide the control in the web interface.
             enum: {value: title} for a value with names.
-            value: initial value, see Control.set_value for the types. A pushbutton takes none.
 
         Raises:
             ValueError: the name, the type, precision, minimum or maximum is invalid, or the control
@@ -481,12 +481,12 @@ class Device:  # pylint: disable=too-many-public-methods
             control_type,
             value=value,
             title=title,
-            units=units,
-            precision=precision,
-            minimum=minimum,
             maximum=maximum,
-            order=order,
+            minimum=minimum,
+            precision=precision,
             readonly=readonly,
+            units=units,
+            order=order,
             hidden=hidden,
             enum=enum,
         )
