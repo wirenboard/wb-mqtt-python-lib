@@ -1,4 +1,4 @@
-name: tests
+name: CI
 
 on:
   push:
@@ -10,6 +10,7 @@ permissions:
 
 jobs:
   lint:
+    name: Linters
     runs-on: ubuntu-latest
     # pylint resolves the imports against the same packages as on the controller
     container: debian:trixie
@@ -41,6 +42,7 @@ jobs:
         run: /opt/lint/bin/python -m pylint -j 0 wb_mqtt_lib tests
 
   tests:
+    name: Tests
     runs-on: ubuntu-latest
     # Same Debian release and package versions as on the controller
     container: debian:trixie
