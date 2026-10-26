@@ -261,7 +261,8 @@ async def test_foreign_pushbutton_presses_and_a_retained_leftover(
 ) -> None:
     """
     A live press is an event with True. A retained message on a pushbutton is a leftover, not a press, also
-    when the broker sends it again after a reconnect while a handler listens.
+    when the broker sends it again after a reconnect while a handler listens, and when it is published
+    while the handler listens.
     """
     proxy, client = dead_link
     await publish_retained(
@@ -277,6 +278,11 @@ async def test_foreign_pushbutton_presses_and_a_retained_leftover(
     await client.raw.read("/devices/dev/controls/button")
     await asyncio.sleep(0.2)
     assert not presses and button.value is None and button.exists
+
+    await driver.raw.publish("/devices/dev/controls/button", "1", retain=True)
+    await client.raw.read("/devices/dev/controls/button")
+    await asyncio.sleep(0.2)
+    assert not presses
 
     for _ in range(2):
         await driver.raw.publish("/devices/dev/controls/button", "1")

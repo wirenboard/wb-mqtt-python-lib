@@ -249,20 +249,25 @@ async def test_value_is_published_on_change_and_pushbutton_every_time(client: Cl
     assert published == ["level=1", "level=2", "button=1", "button=1"]
 
 
+@pytest.mark.parametrize("sent", ["before the device", "while the device listens"])
 async def test_retained_command_is_erased_and_live_command_reaches_handler(
-    broker: MosquittoBroker, connect: ConnectClient, client: Client
+    broker: MosquittoBroker, connect: ConnectClient, client: Client, sent: str
 ) -> None:
     """
-    A command left in /on from the past is not executed, an empty live one does not reach the handler.
+    A retained command in /on is not executed, one left from the past and one published while the client
+    listens. An empty live one does not reach the handler.
 
     A live one goes to on_command with a typed value.
     """
     other = await connect("other")
-    await other.raw.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
+    if sent == "before the device":
+        await other.raw.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
     device = await client.create_device("test_dev")
     relay = await device.create_control("relay", ControlType.SWITCH, value=False)
     commands = []
     relay.on_command(lambda control, value: commands.append(value))
+    if sent == "while the device listens":
+        await other.raw.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
 
     await wait_retained(broker.port, "/devices/test_dev/controls/relay/on", {})
     assert not commands

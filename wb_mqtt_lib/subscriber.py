@@ -40,6 +40,7 @@ class Message:
 
     retain is True only for the state at subscription, what the broker keeps under the filter when
     the callback subscribes. A live message has it False, even when it was published retained.
+    A callback subscribed with retain_as_published gets the flag the message was published with.
     """
 
     topic: str
@@ -78,6 +79,8 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         self._topic_matcher = link.TopicMatcher()
         # How many subscriptions each callback has, a callback with one needs no check for repeats
         self._subscription_counts: Counter[MessageCallback] = Counter()
+        # Whether a callback gets the retain flag a message was published with
+        self._retain_as_published: dict[MessageCallback, bool] = {}
         self._subscription_numbers = itertools.count(1)
         # Order of SUBSCRIBE and marker packets. The broker handles them in this order, so a marker answers
         # every SUBSCRIBE sent before it.
@@ -175,7 +178,11 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
     # ------------------------------------------------------------
 
     async def subscribe(
-        self, topic_filters: Sequence[str], callback: MessageCallback, qos: int = SUBSCRIPTION_QOS
+        self,
+        topic_filters: Sequence[str],
+        callback: MessageCallback,
+        qos: int = SUBSCRIPTION_QOS,
+        retain_as_published: bool = False,
     ) -> None:
         """
         Add a callback for topic filters and return once it got what the broker keeps under them.
@@ -189,6 +196,8 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
             topic_filters: MQTT filters, + and # allowed.
             callback: called inside the read loop, must not block.
             qos: QoS of a new subscription. A callback that joins gets the QoS the subscription has.
+            retain_as_published: the callback gets the retain flag a message was published with. Otherwise
+                retain is True only for the state at subscription, as a raw handler sees it.
 
         Raises:
             ValueError: the broker would refuse a filter or the QoS.
@@ -200,6 +209,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         for topic_filter in topic_filters:
             topics.check_filter(topic_filter)
         link.check_qos(qos)
+        self._retain_as_published[callback] = retain_as_published
         added_filters: list[str] = []
         try:
             # A new filter subscribes, a known one takes the callback and hands it the retained messages
@@ -263,6 +273,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
             self._subscription_counts[callback] -= 1
             if not self._subscription_counts[callback]:
                 del self._subscription_counts[callback]
+                self._retain_as_published.pop(callback, None)
             if subscription.callbacks:
                 return
 
@@ -399,11 +410,16 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         elif retain:
             subscription.retained.pop(topic, None)
 
-        # Callbacks see retain only for the state at subscription
+        # Callbacks see retain only for the state at subscription, unless they asked for it as published
         retained_at_subscription = subscription.pending_retained is not None and retain and bool(payload)
         message = Message(topic, payload, retained_at_subscription, qos)
+        message_as_published = Message(topic, payload, retain, qos)
         for callback in list(subscription.callbacks):
-            if self._is_source_subscription(callback, subscription, topic, matching):
+            if not self._is_source_subscription(callback, subscription, topic, matching):
+                continue
+            if self._retain_as_published.get(callback):
+                self._call_safely(callback, message_as_published)
+            else:
                 self._call_safely(callback, message)
 
     def _is_source_subscription(

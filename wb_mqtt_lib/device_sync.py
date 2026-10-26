@@ -119,7 +119,9 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
 
     async def _subscribe_device(self, name: str) -> None:
         try:
-            await self._subscriber.subscribe(topics.watch_filters(name), self._on_device_message)
+            await self._subscriber.subscribe(
+                topics.watch_filters(name), self._on_device_message, retain_as_published=True
+            )
         except BaseException:
             # Undo the subscription, the next call subscribes again
             for topic_filter in topics.watch_filters(name):
@@ -476,8 +478,8 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         ):
             return
 
-        # A command left from the past is not executed, it is erased like libwbmqtt1 does.
-        # An empty one, the echo of such an erasure for example, is skipped.
+        # A retained command, left from the past or published retained later, is not executed, it is erased
+        # like libwbmqtt1 does. An empty one, the echo of such an erasure for example, is skipped.
         if message.retain:
             if message.payload:
                 logger.debug("Ignoring retained command on %s and scheduling its erasure", message.topic)
@@ -590,7 +592,9 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
 
     async def _subscribe_commands(self, name: str) -> None:
         try:
-            await self._subscriber.subscribe([topics.command_filter(name)], self._on_command)
+            await self._subscriber.subscribe(
+                [topics.command_filter(name)], self._on_command, retain_as_published=True
+            )
         except (BrokerDisconnectedError, ClientClosedError):
             # Without a link it is subscribed all the same, on close it does not matter
             pass
@@ -679,7 +683,7 @@ def _get_driver_device_names(driver: str, signatures: dict[str, bytes]) -> set[s
 
 def _apply_foreign_message(state: State, topic: topics.ParsedTopic, payload: str, retain: bool) -> None:
     """
-    Apply a message of a foreign device to the state. retain is True for what the broker kept.
+    Apply a message of a foreign device to the state. retain is the flag the message was published with.
     """
     # Meta of the device, an empty one clears it
     if topic.kind is topics.TopicKind.DEVICE_META:
