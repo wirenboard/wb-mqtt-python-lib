@@ -13,7 +13,7 @@ from enum import Flag, StrEnum, auto
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Union
 
-from .topics import is_refused_by_broker
+from .._mqtt.checks import is_int, is_refused_by_broker, is_utf8_text
 
 # ------------------------------------------------------------
 # Control types
@@ -525,26 +525,6 @@ def _parse_number(payload: str) -> Union[int, float]:
 # ------------------------------------------------------------
 # Checks and lenient reading of foreign meta
 # ------------------------------------------------------------
-
-
-def is_utf8_text(value: Any) -> bool:
-    """
-    Whether the value is a string that goes into a topic, a lone surrogate has no UTF-8 form.
-    """
-    if not isinstance(value, str):
-        return False
-    try:
-        value.encode("utf-8")
-    except UnicodeEncodeError:
-        return False
-    return True
-
-
-def is_int(value: Any) -> bool:
-    """
-    Whether the value is an int. bool is an int in Python, here it is not.
-    """
-    return isinstance(value, int) and not isinstance(value, bool)
 
 
 def _is_number(value: Any) -> bool:

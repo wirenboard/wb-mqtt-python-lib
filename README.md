@@ -34,7 +34,7 @@
 
 На события сервис отвечает [обработчиками](#обработчики-событий), которые назначает на объекты методами `on_*`. Например, команда из `/on` своего контрола приходит в `on_command`, а новое значение чужого контрола в `on_value`.
 
-Для работы с топиками вне конвенции есть [прямые методы](#работа-с-mqtt-вне-конвенции) `client.direct`.
+Для работы с топиками вне конвенции есть [методы `client.raw`](#работа-с-mqtt-вне-конвенции).
 
 
 ## Порядок работы
@@ -177,17 +177,20 @@ git -C wb-mqtt-python-lib checkout <коммит>
 git add .gitmodules wb-mqtt-python-lib
 ```
 
-В `setup.py` сервиса пакет библиотеки добавляют к пакетам сервиса.
+В `setup.py` сервиса пакет библиотеки с его подпакетами добавляют к пакетам сервиса.
 
 ```python
-from setuptools import find_namespace_packages, setup
+from setuptools import find_namespace_packages, find_packages, setup
 
 LIB_PACKAGE = "wb.mqtt_example.wb_mqtt_lib"
+LIB_DIR = "wb-mqtt-python-lib/wb_mqtt_lib"
 
 setup(
     name="wb-mqtt-example",
-    packages=find_namespace_packages(include=["wb.*"]) + [LIB_PACKAGE],
-    package_dir={LIB_PACKAGE: "wb-mqtt-python-lib/wb_mqtt_lib"},
+    packages=find_namespace_packages(include=["wb.*"])
+    + [LIB_PACKAGE]
+    + [f"{LIB_PACKAGE}.{name}" for name in find_packages(LIB_DIR)],
+    package_dir={LIB_PACKAGE: LIB_DIR},
 )
 ```
 
@@ -249,7 +252,7 @@ except TimeoutError:
 
 У каждого клиента должно быть своё имя драйвера. Библиотека считает своими все устройства с именем своего драйвера, поэтому клиент с тем же именем может стереть устройства другого как свои. Второй клиент с тем же драйвером в том же процессе получит `ValueError` при подключении, пока первый не закрыт.
 
-`client.is_connected` показывает, есть ли сейчас связь с брокером. Команда чужому контролу без связи не копится до переподключения, а сразу бросает `BrokerDisconnectedError`, поэтому эту ошибку ловят, а не проверяют `is_connected` заранее. Изменения своих устройств и retained-публикации `client.direct` без связи ошибки не дают, библиотека отправит их после переподключения.
+`client.is_connected` показывает, есть ли сейчас связь с брокером. Команда чужому контролу без связи не копится до переподключения, а сразу бросает `BrokerDisconnectedError`, поэтому эту ошибку ловят, а не проверяют `is_connected` заранее. Изменения своих устройств и retained-публикации `client.raw` без связи ошибки не дают, библиотека отправит их после переподключения.
 
 `client.on_connection_change(handler)` сообщает о смене связи, это единственный обработчик клиента. Свои устройства и подписки библиотека восстанавливает сама, а событие нужно сервису, который сам что-то делает при обрыве. Например, он помечает устройства внешней системы недоступными, а после возврата связи запрашивает её состояние.
 
@@ -456,7 +459,7 @@ await relay.set_value(True)  # команда в /devices/wb-mr6c_10/controls/K1
 
 `set_value` чужого контрола с `readonly` отправляет команду как обычно, примет ли её драйвер, решает он сам.
 
-Чужое устройство удалить нельзя, `remove()` бросает `NotOwnError`. Стереть чужие топики можно прямыми методами, рецепт в разделе [Работа с MQTT вне конвенции](#работа-с-mqtt-вне-конвенции).
+Чужое устройство удалить нельзя, `remove()` бросает `NotOwnError`. Стереть чужие топики можно методами `client.raw`, рецепт в разделе [Работа с MQTT вне конвенции](#работа-с-mqtt-вне-конвенции).
 
 
 ## Поля объектов
@@ -652,7 +655,7 @@ setpoint.on_value(limit)
 | ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
 | `control.remove_handler(handler)`, `device.remove_handler(handler)` | без `await`, снимает функцию со всех `on_*` этого объекта, у устройства и с `on_control_*`. Та же функция на других объектах остаётся |
 | `client.remove_handler(handler)`                                    | без `await`, снимает функцию с `on_connection_change`                                                                                 |
-| `await client.direct.unsubscribe(handler)`                          | снимает обработчик со всех его фильтров. Если у фильтра не осталось обработчиков, библиотека отписывается в брокере                   |
+| `await client.raw.unsubscribe(handler)`                             | снимает обработчик со всех его фильтров. Если у фильтра не осталось обработчиков, библиотека отписывается в брокере                   |
 
 Снимают ту же функцию, которую назначали, поэтому лямбду, которую потом надо снять, сохраняют в переменную. После снятия обработчик больше не вызывается.
 
@@ -683,14 +686,14 @@ client.start_task(poll_cpu_temperature())
 
 ## Работа с MQTT вне конвенции
 
-Для топиков вне конвенции есть прямые методы в `client.direct`. Внутри конвенции библиотека публикует с QoS 1 и подписывается с QoS 0, другой QoS задают в прямых методах.
+Для топиков вне конвенции есть методы `client.raw`. По умолчанию библиотека публикует с QoS 1 и подписывается с QoS 0, другой QoS задают в методах `client.raw`.
 
-| Вызов                                                              | Что делает                                                                                                                                                                                                         |
-| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `await client.direct.subscribe(topic_filter, handler, qos=0)`      | подписка по фильтру с масками `+` и `#` до `unsubscribe` или `close()`. Возвращается, когда retained-сообщения под фильтром уже стоят в очереди обработчика. После переподключения подписка восстанавливается сама |
-| `await client.direct.unsubscribe(handler)`                         | снимает обработчик со всех его фильтров                                                                                                                                                                            |
-| `await client.direct.read(topic_filter)`                           | разово отдаёт то, что брокер хранит под фильтром сейчас, словарём «топик → тело»                                                                                                                                   |
-| `await client.direct.publish(topic, payload, qos=1, retain=False)` | публикует сообщение. Топик без масок, тело строкой, байтами, числом или `None`, но не `bool`                                                                                                                       |
+| Вызов                                                           | Что делает                                                                                                                                                                                                         |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `await client.raw.subscribe(topic_filter, handler, qos=0)`      | подписка по фильтру с масками `+` и `#` до `unsubscribe` или `close()`. Возвращается, когда retained-сообщения под фильтром уже стоят в очереди обработчика. После переподключения подписка восстанавливается сама |
+| `await client.raw.unsubscribe(handler)`                         | снимает обработчик со всех его фильтров                                                                                                                                                                            |
+| `await client.raw.read(topic_filter)`                           | разово отдаёт то, что брокер хранит под фильтром сейчас, словарём «топик → тело»                                                                                                                                   |
+| `await client.raw.publish(topic, payload, qos=1, retain=False)` | публикует сообщение. Топик без масок, тело строкой, байтами, числом или `None`, но не `bool`                                                                                                                       |
 
 ```python
 # Список устройств шлюза приходит при подписке и при каждом изменении
@@ -699,12 +702,12 @@ async def devices_changed(message: Message) -> None:
         logger.info("Gateway device %s", device["name"])
 
 
-await client.direct.subscribe("gateway/devices", devices_changed)
+await client.raw.subscribe("gateway/devices", devices_changed)
 # Разовое чтение, словарь «топик → тело» в байтах
-state = await client.direct.read("gateway/state")
+state = await client.raw.read("gateway/state")
 online = state.get("gateway/state") == b"online"
 # Запрос шлюзу
-await client.direct.publish("gateway/request/scan", '{"time": 60}')
+await client.raw.publish("gateway/request/scan", '{"time": 60}')
 ```
 
 Обработчик получает `Message` с полями `topic`, `payload` в байтах, `retain` и `qos`. Флаг `retain` такой, с каким сообщение опубликовали. `retain=True` у сохранённых сообщений, которые брокер отдаёт при подписке и после каждого переподключения, и у новых сообщений, опубликованных с флагом retain. `retain=False` у сообщений, опубликованных без него.
@@ -715,15 +718,15 @@ await client.direct.publish("gateway/request/scan", '{"time": 60}')
 
 После каждого переподключения клиент публикует свои retained-сообщения заново, кроме стёртых.
 
-Сообщение без retain получат только те, кто подписан сейчас. Без связи такой `direct.publish` сразу бросает `BrokerDisconnectedError`.
+Сообщение без retain получат только те, кто подписан сейчас. Без связи такой `raw.publish` сразу бросает `BrokerDisconnectedError`.
 
-Значения устройств конвенции меняют через объекты. Прямым методом можно послать команду в `/on` своего или чужого контрола, она дойдёт до драйвера или до `on_command` так же, как команда другого сервиса. Запись прямым методом в топик значения библиотека не учитывает, значение в объекте останется прежним.
+Значения устройств конвенции меняют через объекты. Через `client.raw` можно послать команду в `/on` своего или чужого контрола, она дойдёт до драйвера или до `on_command` так же, как команда другого сервиса. Запись через `client.raw` в топик значения библиотека не учитывает, значение в объекте останется прежним.
 
 Отдельного метода удаления нет. Один топик стирается пустым retained, а много топиков по маске стираются так.
 
 ```python
-for topic in await client.direct.read("/devices/old_device/#"):
-    await client.direct.publish(topic, "", retain=True)
+for topic in await client.raw.read("/devices/old_device/#"):
+    await client.raw.publish(topic, "", retain=True)
 ```
 
 Обработчик, который ждёт ответ на один запрос, снимают сразу после ответа. Иначе каждый запрос оставлял бы на фильтре ещё одну функцию.
@@ -736,14 +739,12 @@ async def scan(client: Client, seconds: int) -> Any:
         if not answer.done():
             answer.set_result(json.loads(message.payload))
 
-    await client.direct.subscribe("gateway/response/scan", on_response)
+    await client.raw.subscribe("gateway/response/scan", on_response)
     try:
-        await client.direct.publish(
-            "gateway/request/scan", json.dumps({"time": seconds})
-        )
+        await client.raw.publish("gateway/request/scan", json.dumps({"time": seconds}))
         return await asyncio.wait_for(answer, 10)
     finally:
-        await client.direct.unsubscribe(on_response)
+        await client.raw.unsubscribe(on_response)
 ```
 
 
@@ -769,9 +770,9 @@ async def scan(client: Client, seconds: int) -> Any:
 
 ## Логи
 
-Библиотека пишет в стандартный `logging`, вывод настраивает сервис. Имена логгеров идут по пути импорта, у библиотеки внутри пакета сервиса это `wb.<сервис>.wb_mqtt_lib.client`, `.device_sync`, `.subscriber`, `.publisher`, `.listeners` и `.state`, а строки aiomqtt и paho идут в `wb.<сервис>.wb_mqtt_lib.broker_connection.aiomqtt`. Обрыв связи клиент пишет одной строкой WARNING.
+Библиотека пишет в стандартный `logging`, вывод настраивает сервис. Свои уровни библиотека не задаёт, поэтому её логи идут на том же уровне, что и логи сервиса. Обрыв связи клиент пишет одной строкой WARNING, подробности работы идут на уровне DEBUG.
 
-Подробности работы библиотеки идут на уровне DEBUG. Включить его только для библиотеки при общем уровне INFO можно так.
+Уровень всей библиотеки отдельно от сервиса задают одним логгером `wb.<сервис>.wb_mqtt_lib`, остальные её логгеры дочерние. Например, так включают DEBUG только для библиотеки при общем уровне INFO.
 
 ```python
 logging.basicConfig(level=logging.INFO)

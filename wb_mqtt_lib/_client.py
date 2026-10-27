@@ -4,30 +4,30 @@ Client: one broker connection, reconnect, the devices of the service and its bac
 
 import asyncio
 import contextlib
-import logging
 import uuid
 from typing import Any, Coroutine, Optional
 
-from . import broker_connection
-from .broker_url import DEFAULT_BROKER_URL, parse_broker_url
-from .device_sync import DeviceSync
-from .devices import Control, Device
-from .direct_topics import DirectTopics
-from .errors import ClientClosedError, LoginRejectedError
-from .listeners import (
+from ._convention.device_manager import DeviceManager
+from ._convention.devices import Control, Device
+from ._convention.state import State
+from ._convention.values import DeviceSnapshot, TitleLike, check_name
+from ._errors import ClientClosedError, LoginRejectedError
+from ._listeners import (
     ConnectionHandler,
     Handler,
     ListenerRegistry,
     ListenerSet,
     check_handler_arguments,
 )
-from .publisher import Publisher
-from .state import State
-from .subscriber import Subscriber
-from .tasks import TaskSet
-from .values import DeviceSnapshot, TitleLike, check_name
+from ._logs import get_logger
+from ._mqtt import broker_connection
+from ._mqtt.broker_url import DEFAULT_BROKER_URL, parse_broker_url
+from ._mqtt.publisher import Publisher
+from ._mqtt.raw_topics import RawTopics
+from ._mqtt.subscriber import Subscriber
+from ._tasks import TaskSet
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 RECONNECT_MIN_DELAY_S = 0.5
 RECONNECT_MAX_DELAY_S = 30.0
@@ -66,11 +66,11 @@ class Client:  # pylint: disable=too-many-instance-attributes
         self._listener_registry = ListenerRegistry()
         self._connection_listeners = ListenerSet(self._listener_registry, f"client {driver}")
         state = State(self._listener_registry, self._make_control, self._make_device)
-        self._device_sync = DeviceSync(
+        self._device_manager = DeviceManager(
             driver, self._subscriber, self._publisher, state, is_closed=self._is_closed
         )
         self._service_tasks = TaskSet(logger)
-        self.direct = DirectTopics(
+        self.raw = RawTopics(
             self._subscriber, self._publisher, self._listener_registry, is_closed=self._is_closed
         )
 
@@ -180,7 +180,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         await self._listener_registry.stop_all(spare=caller)
         await self._service_tasks.cancel_all_tasks(spare=caller)
         self._subscriber.fail_waits()
-        await self._device_sync.close()
+        await self._device_manager.close()
         await self._stop_sessions()
 
     def start_task(self, coroutine: Coroutine[Any, Any, Any], name: Optional[str] = None) -> asyncio.Task:
@@ -246,7 +246,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             BrokerDisconnectedError: no broker link to check the name.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.create_device(name, title, force)
+        await self._device_manager.create_device(name, title, force)
         return self._make_device(name)
 
     async def get_device(self, name: str, timeout: Optional[float] = None) -> Device:
@@ -262,9 +262,9 @@ class Client:  # pylint: disable=too-many-instance-attributes
             BrokerDisconnectedError: no broker link to read a device not read before.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.watch_device(name)
+        await self._device_manager.watch_device(name)
         if timeout is not None:
-            await self._device_sync.wait_device_exists(name, timeout)
+            await self._device_manager.wait_device_exists(name, timeout)
         return self._make_device(name)
 
     async def get_control(self, name: str, timeout: Optional[float] = None) -> Control:
@@ -282,9 +282,9 @@ class Client:  # pylint: disable=too-many-instance-attributes
         if not separator:
             raise ValueError(f"control name {name!r} must look like device/control")
         check_name(control_name, "control")
-        await self._device_sync.watch_device(device_name)
+        await self._device_manager.watch_device(device_name)
         if timeout is not None:
-            await self._device_sync.wait_control_exists(device_name, control_name, timeout)
+            await self._device_manager.wait_control_exists(device_name, control_name, timeout)
         return self._make_control(device_name, control_name)
 
     async def get_device_names(self) -> list[str]:
@@ -295,7 +295,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             BrokerDisconnectedError: no broker link.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        return await self._device_sync.get_device_names()
+        return await self._device_manager.get_device_names()
 
     async def get_device_snapshot(self, name: str) -> Optional[DeviceSnapshot]:
         """
@@ -312,7 +312,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             BrokerDisconnectedError: no broker link.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        return await self._device_sync.get_device_snapshot(name)
+        return await self._device_manager.get_device_snapshot(name)
 
     async def remove_driver_devices(self) -> list[str]:
         """
@@ -325,7 +325,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             BrokerDisconnectedError: no broker link.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        return await self._device_sync.remove_driver_devices()
+        return await self._device_manager.remove_driver_devices()
 
     def _raise_if_closed(self) -> None:
         if self._closed:
@@ -335,10 +335,10 @@ class Client:  # pylint: disable=too-many-instance-attributes
         return self._closed
 
     def _make_control(self, device_name: str, control_name: str) -> Control:
-        return Control(self._make_device(device_name), control_name, self._device_sync)
+        return Control(self._make_device(device_name), control_name, self._device_manager)
 
     def _make_device(self, device_name: str) -> Device:
-        return Device(device_name, self._device_sync)
+        return Device(device_name, self._device_manager)
 
     async def _run_sessions(self) -> None:
         delay = RECONNECT_MIN_DELAY_S

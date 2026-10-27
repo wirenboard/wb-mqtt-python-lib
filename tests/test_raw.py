@@ -1,5 +1,5 @@
 """
-client.direct: topics outside the convention.
+client.raw: topics outside the convention.
 """
 
 import asyncio
@@ -18,20 +18,20 @@ from tests.broker import (
     wait_until,
 )
 from wb_mqtt_lib import Client, ControlType, Message
-from wb_mqtt_lib import subscriber as subscriber_module
+from wb_mqtt_lib._mqtt import subscriber as subscriber_module
 
 
 async def test_subscribe_gets_retained_at_once_then_live(client: Client) -> None:
     """
-    A direct subscription gets what lies in the broker, then live messages, each with the retain flag it was
+    A raw subscription gets what lies in the broker, then live messages, each with the retain flag it was
     published with.
     """
-    await client.direct.publish("zigbee2mqtt/bridge/state", '{"state": "online"}', retain=True)
+    await client.raw.publish("zigbee2mqtt/bridge/state", '{"state": "online"}', retain=True)
     received: list[Message] = []
 
-    await client.direct.subscribe("zigbee2mqtt/#", received.append)
-    await client.direct.publish("zigbee2mqtt/bridge/request/permit_join", '{"time": 254}')
-    await client.direct.publish("zigbee2mqtt/bridge/state", '{"state": "offline"}', retain=True)
+    await client.raw.subscribe("zigbee2mqtt/#", received.append)
+    await client.raw.publish("zigbee2mqtt/bridge/request/permit_join", '{"time": 254}')
+    await client.raw.publish("zigbee2mqtt/bridge/state", '{"state": "offline"}', retain=True)
 
     await wait_until(lambda: len(received) == 3)
     assert [(m.topic, m.retain) for m in received] == [
@@ -48,12 +48,12 @@ async def test_read_and_erase_recipe(broker: MosquittoBroker, client: Client) ->
     Erasures do not stay in the replay mirror, a one-off read leaves no subscription in the broker.
     """
     for name in ("a", "b"):
-        await client.direct.publish(f"/devices/old/controls/{name}", "1", retain=True)
+        await client.raw.publish(f"/devices/old/controls/{name}", "1", retain=True)
 
-    for topic in await client.direct.read("/devices/old/#"):
-        await client.direct.publish(topic, "", retain=True)
+    for topic in await client.raw.read("/devices/old/#"):
+        await client.raw.publish(topic, "", retain=True)
 
-    assert await client.direct.read("/devices/old/#") == {}
+    assert await client.raw.read("/devices/old/#") == {}
     assert internals(client)["replay mirror"] == 0
     assert broker.unsubscriptions() == ["/devices/old/#"] * 2
 
@@ -62,7 +62,7 @@ async def test_one_handler_on_several_filters_until_removed(broker: MosquittoBro
     """
     One handler listens to several filters with one queue, overlapping filters call it once.
 
-    direct.unsubscribe takes it off every filter and the broker subscriptions go with it.
+    raw.unsubscribe takes it off every filter and the broker subscriptions go with it.
     """
     received: list[str] = []
 
@@ -70,16 +70,16 @@ async def test_one_handler_on_several_filters_until_removed(broker: MosquittoBro
         received.append(message.topic)
 
     for topic_filter in ("zigbee2mqtt/bridge/devices", "zigbee2mqtt/bridge/#", "zigbee2mqtt/bridge/groups"):
-        assert await client.direct.subscribe(topic_filter, handler) is handler
-    await client.direct.subscribe("zigbee2mqtt/bridge/devices", handler)
+        assert await client.raw.subscribe(topic_filter, handler) is handler
+    await client.raw.subscribe("zigbee2mqtt/bridge/devices", handler)
     for name in ("devices", "groups", "state"):
-        await client.direct.publish(f"zigbee2mqtt/bridge/{name}", "[]")
+        await client.raw.publish(f"zigbee2mqtt/bridge/{name}", "[]")
     await wait_until(lambda: len(received) == 3)
 
-    await client.direct.unsubscribe(handler)
+    await client.raw.unsubscribe(handler)
     after: list[str] = []
-    await client.direct.subscribe("zigbee2mqtt/#", lambda message: after.append(message.topic))
-    await client.direct.publish("zigbee2mqtt/bridge/devices", "[]")
+    await client.raw.subscribe("zigbee2mqtt/#", lambda message: after.append(message.topic))
+    await client.raw.publish("zigbee2mqtt/bridge/devices", "[]")
     await wait_until(lambda: len(after) == 1)
 
     assert received == ["zigbee2mqtt/bridge/devices", "zigbee2mqtt/bridge/groups", "zigbee2mqtt/bridge/state"]
@@ -104,15 +104,15 @@ async def test_unsubscribe_cancelled_midway_still_takes_the_handler_off_every_fi
         received.append(message.topic)
 
     for topic_filter in ("a/#", "b/#", "c/#"):
-        await client.direct.subscribe(topic_filter, handler)
-    call = asyncio.ensure_future(client.direct.unsubscribe(handler))
+        await client.raw.subscribe(topic_filter, handler)
+    call = asyncio.ensure_future(client.raw.unsubscribe(handler))
     await asyncio.sleep(0)
     call.cancel()
     with pytest.raises(asyncio.CancelledError):
         await call
 
     await wait_until(lambda: internals(client)["subscriptions"] == baseline["subscriptions"])
-    await client.direct.publish("c/x", "1")
+    await client.raw.publish("c/x", "1")
     await asyncio.sleep(0.2)
     assert not received and internals(client) == baseline
 
@@ -126,13 +126,13 @@ async def test_one_handler_on_overlapping_filters_gets_a_retained_message_once(
 
     The second filter may be new or held by another handler already, then the handler joins its subscription.
     """
-    await client.direct.publish("zigbee2mqtt/bridge/devices", "[]", retain=True)
+    await client.raw.publish("zigbee2mqtt/bridge/devices", "[]", retain=True)
     if filter_held:
-        await client.direct.subscribe("zigbee2mqtt/bridge/#", lambda message: None)
+        await client.raw.subscribe("zigbee2mqtt/bridge/#", lambda message: None)
     received: list[Message] = []
 
-    await client.direct.subscribe("zigbee2mqtt/bridge/devices", received.append)
-    await client.direct.subscribe("zigbee2mqtt/bridge/#", received.append)
+    await client.raw.subscribe("zigbee2mqtt/bridge/devices", received.append)
+    await client.raw.subscribe("zigbee2mqtt/bridge/#", received.append)
 
     await asyncio.sleep(0.2)
     assert [(m.topic, m.retain) for m in received] == [("zigbee2mqtt/bridge/devices", True)]
@@ -146,10 +146,10 @@ async def test_one_handler_on_overlapping_filters_gets_a_retained_message_once_a
     under both comes to the handler once more, as retained and once.
     """
     proxy, client = dead_link
-    await driver.direct.publish("zigbee2mqtt/bridge/devices", "[]", retain=True)
+    await driver.raw.publish("zigbee2mqtt/bridge/devices", "[]", retain=True)
     received: list[Message] = []
-    await client.direct.subscribe("zigbee2mqtt/bridge/devices", received.append)
-    await client.direct.subscribe("zigbee2mqtt/bridge/#", received.append)
+    await client.raw.subscribe("zigbee2mqtt/bridge/devices", received.append)
+    await client.raw.subscribe("zigbee2mqtt/bridge/#", received.append)
     await wait_until(lambda: len(received) == 1)
 
     await proxy.drop(client)
@@ -167,8 +167,8 @@ async def test_handler_joining_a_held_filter_while_its_other_filter_waits_for_th
     does not. Meanwhile the handler joins a narrow filter that another handler holds already. The message
     under both reaches it once.
     """
-    await driver.direct.publish("zigbee2mqtt/bridge/devices", "[]", retain=True)
-    await client.direct.subscribe("zigbee2mqtt/bridge/#", lambda message: None)
+    await driver.raw.publish("zigbee2mqtt/bridge/devices", "[]", retain=True)
+    await client.raw.subscribe("zigbee2mqtt/bridge/#", lambda message: None)
     lose_end_markers(client, monkeypatch)
     monkeypatch.setattr(subscriber_module, "RETAINED_END_TIMEOUT_S", 0.5)
     received: list[str] = []
@@ -176,12 +176,12 @@ async def test_handler_joining_a_held_filter_while_its_other_filter_waits_for_th
     def handler(message: Message) -> None:
         received.append(message.topic)
 
-    wide = asyncio.ensure_future(client.direct.subscribe("zigbee2mqtt/#", handler))
+    wide = asyncio.ensure_future(client.raw.subscribe("zigbee2mqtt/#", handler))
     await wait_until(lambda: received == ["zigbee2mqtt/bridge/devices"])
-    await wait_or_dump(client.direct.subscribe("zigbee2mqtt/bridge/#", handler), timeout=5)
+    await wait_or_dump(client.raw.subscribe("zigbee2mqtt/bridge/#", handler), timeout=5)
     await wait_or_dump(wide, timeout=5)
     # One queue per handler, a message handed over twice would come before this one
-    await driver.direct.publish("zigbee2mqtt/bridge/state", "online")
+    await driver.raw.publish("zigbee2mqtt/bridge/state", "online")
 
     await wait_until(lambda: received[-1] == "zigbee2mqtt/bridge/state")
     assert received == ["zigbee2mqtt/bridge/devices", "zigbee2mqtt/bridge/state"]
@@ -198,10 +198,10 @@ async def test_handlers_on_one_filter_get_every_retained_message_once(client: Cl
     """
     topics = [f"/state/t{index}" for index in range(200)]
     for topic in topics:
-        await client.direct.publish(topic, "1", retain=True)
+        await client.raw.publish(topic, "1", retain=True)
     received: list[list[Message]] = [[], [], []]
 
-    subscriptions = [client.direct.subscribe("/state/#", messages.append) for messages in received]
+    subscriptions = [client.raw.subscribe("/state/#", messages.append) for messages in received]
     if together:
         await asyncio.gather(*subscriptions)
     else:
@@ -223,18 +223,18 @@ async def test_second_handler_and_a_read_of_a_subscribed_filter_need_no_broker(
     The link loses everything meanwhile, and both return at once. The subscription follows live retained
     messages, so a topic published after it is there too, and a kept topic has its newer value.
     """
-    await driver.direct.publish("/state/x", "1", retain=True)
+    await driver.raw.publish("/state/x", "1", retain=True)
     proxy, client = dead_link
     first: list[Message] = []
-    await client.direct.subscribe("/state/#", first.append)
-    await driver.direct.publish("/state/x", "3", retain=True)
-    await driver.direct.publish("/state/y", "2", retain=True)
+    await client.raw.subscribe("/state/#", first.append)
+    await driver.raw.publish("/state/x", "3", retain=True)
+    await driver.raw.publish("/state/y", "2", retain=True)
     await wait_until(lambda: len(first) == 3)
     proxy.dead = True
     second: list[Message] = []
 
-    await wait_or_dump(client.direct.subscribe("/state/#", second.append), timeout=2)
-    read = await wait_or_dump(client.direct.read("/state/#"), timeout=2)
+    await wait_or_dump(client.raw.subscribe("/state/#", second.append), timeout=2)
+    read = await wait_or_dump(client.raw.read("/state/#"), timeout=2)
 
     proxy.dead = False
     assert read == {"/state/x": b"3", "/state/y": b"2"}
@@ -245,19 +245,19 @@ async def test_second_handler_and_a_read_of_a_subscribed_filter_need_no_broker(
     ]
 
 
-async def test_direct_handler_over_a_read_device_gets_no_repeats_and_the_device_no_double_events(
+async def test_raw_handler_over_a_read_device_gets_no_repeats_and_the_device_no_double_events(
     driver: Client, client: Client
 ) -> None:
     """
-    A direct handler on /devices/# overlaps the subscription of a device the same client reads.
+    A raw handler on /devices/# overlaps the subscription of a device the same client reads.
 
-    The broker sends a copy of a message to each subscription. Reading the device brings the direct handler
+    The broker sends a copy of a message to each subscription. Reading the device brings the raw handler
     no retained messages again, a live message reaches it once, and a press reaches the device once.
     """
     temp = await (await driver.create_device("dev")).create_control("temp", ControlType.VALUE, value=1)
-    await driver.direct.publish("/devices/dev/controls/button/meta", '{"type": "pushbutton"}', retain=True)
+    await driver.raw.publish("/devices/dev/controls/button/meta", '{"type": "pushbutton"}', retain=True)
     seen: list[Message] = []
-    await client.direct.subscribe("/devices/#", seen.append)
+    await client.raw.subscribe("/devices/#", seen.append)
     await wait_until(lambda: len(seen) == 4)
     seen.clear()
     button = await client.get_control("dev/button")
@@ -266,7 +266,7 @@ async def test_direct_handler_over_a_read_device_gets_no_repeats_and_the_device_
     button.on_value(lambda control, value, previous: presses.append(value))
 
     await temp.set_value(2)
-    await driver.direct.publish("/devices/dev/controls/button", "1")
+    await driver.raw.publish("/devices/dev/controls/button", "1")
 
     await wait_until(lambda: presses == [True] and remote.value == 2)
     await asyncio.sleep(0.2)
@@ -284,14 +284,14 @@ async def test_read_of_a_subscribed_filter_leaves_out_a_topic_erased_meanwhile(
     A subscription follows live erasures too. A read of its filter, answered without the broker, does not
     give back a topic erased after the subscription.
     """
-    await driver.direct.publish("/state/x", "1", retain=True)
-    await driver.direct.publish("/state/y", "2", retain=True)
+    await driver.raw.publish("/state/x", "1", retain=True)
+    await driver.raw.publish("/state/y", "2", retain=True)
     seen: list[Message] = []
-    await client.direct.subscribe("/state/#", seen.append)
-    await driver.direct.publish("/state/x", "", retain=True)
+    await client.raw.subscribe("/state/#", seen.append)
+    await driver.raw.publish("/state/x", "", retain=True)
     await wait_until(lambda: len(seen) == 3)
 
-    assert await wait_or_dump(client.direct.read("/state/#"), timeout=2) == {"/state/y": b"2"}
+    assert await wait_or_dump(client.raw.read("/state/#"), timeout=2) == {"/state/y": b"2"}
 
 
 async def test_read_leaves_out_a_topic_erased_before_its_retained_messages_end(
@@ -301,25 +301,25 @@ async def test_read_leaves_out_a_topic_erased_before_its_retained_messages_end(
     A topic is erased after the broker delivered it to a one-off read but before the marker that ends
     the delivery. The read gives what the broker keeps by the end, without that topic.
     """
-    await driver.direct.publish("/state/x", "1", retain=True)
-    await driver.direct.publish("/state/y", "2", retain=True)
+    await driver.raw.publish("/state/x", "1", retain=True)
+    await driver.raw.publish("/state/y", "2", retain=True)
     erased: list[str] = []
 
     async def erase_before_the_marker(send: Send, topic: str, _payload: Any) -> None:
         if topic.startswith("/wbretainhack/") and not erased:
             erased.append(topic)
-            await driver.direct.publish("/state/x", "", retain=True)
+            await driver.raw.publish("/state/x", "", retain=True)
         await send()
 
     intercept_publish(monkeypatch, erase_before_the_marker)
 
-    assert await wait_or_dump(client.direct.read("/state/#"), timeout=5) == {"/state/y": b"2"}
+    assert await wait_or_dump(client.raw.read("/state/#"), timeout=5) == {"/state/y": b"2"}
     assert erased
 
 
 async def test_failed_subscribe_of_a_listening_handler_keeps_its_filters(client: Client) -> None:
     """
-    A direct subscribe of a handler that listens already fails, on its own filter with a QoS the broker
+    A raw subscribe of a handler that listens already fails, on its own filter with a QoS the broker
     refuses or on a filter the broker refuses. The handler keeps getting the messages of its filter.
     """
     received: list[str] = []
@@ -327,12 +327,12 @@ async def test_failed_subscribe_of_a_listening_handler_keeps_its_filters(client:
     def handler(message: Message) -> None:
         received.append(message.topic)
 
-    await client.direct.subscribe("/a/#", handler)
+    await client.raw.subscribe("/a/#", handler)
     with pytest.raises(ValueError):
-        await client.direct.subscribe("/a/#", handler, qos=3)
+        await client.raw.subscribe("/a/#", handler, qos=3)
     with pytest.raises(ValueError):
-        await client.direct.subscribe("/b/x#", handler)
-    await client.direct.publish("/a/x", "1")
+        await client.raw.subscribe("/b/x#", handler)
+    await client.raw.publish("/a/x", "1")
 
     await wait_until(lambda: received == ["/a/x"])
 
@@ -342,7 +342,7 @@ async def test_subscribe_cancelled_after_unsubscribe_of_its_handler_changes_noth
     client: Client, monkeypatch: pytest.MonkeyPatch, added_again: bool
 ) -> None:
     """
-    unsubscribe takes a handler off while its direct subscribe still waits for the broker, and another
+    unsubscribe takes a handler off while its raw subscribe still waits for the broker, and another
     subscribe may add the handler again meanwhile. Then the first subscribe is cancelled. It ends with
     CancelledError and changes nothing, the handler gets the messages of the filter it has now and of no
     other.
@@ -354,12 +354,12 @@ async def test_subscribe_cancelled_after_unsubscribe_of_its_handler_changes_noth
         received.append(message.topic)
 
     lose_end_markers(client, monkeypatch)
-    first = asyncio.ensure_future(client.direct.subscribe("/a/#", handler))
+    first = asyncio.ensure_future(client.raw.subscribe("/a/#", handler))
     await wait_until(lambda: internals(client)["subscriptions"] == baseline["subscriptions"] + 1)
-    await client.direct.unsubscribe(handler)
+    await client.raw.unsubscribe(handler)
     second = None
     if added_again:
-        second = asyncio.ensure_future(client.direct.subscribe("/b/#", handler))
+        second = asyncio.ensure_future(client.raw.subscribe("/b/#", handler))
         await wait_until(lambda: internals(client)["subscriptions"] == baseline["subscriptions"] + 1)
 
     first.cancel()
@@ -368,10 +368,10 @@ async def test_subscribe_cancelled_after_unsubscribe_of_its_handler_changes_noth
     monkeypatch.undo()
     if second is not None:
         # The marker of a read ends the wait of the second subscribe too
-        await client.direct.read("/c/#")
+        await client.raw.read("/c/#")
         await wait_or_dump(second, timeout=5)
-    await client.direct.publish("/a/x", "1")
-    await client.direct.publish("/b/x", "1")
+    await client.raw.publish("/a/x", "1")
+    await client.raw.publish("/b/x", "1")
 
     await asyncio.sleep(0.2)
     held = 1 if added_again else 0
@@ -389,15 +389,15 @@ async def test_handler_subscribed_again_while_its_first_subscription_is_on_the_w
     """
     topics = [f"/state/t{index}" for index in range(50)]
     for topic in topics:
-        await driver.direct.publish(topic, "1", retain=True)
+        await driver.raw.publish(topic, "1", retain=True)
     received: list[str] = []
 
     def handler(message: Message) -> None:
         received.append(message.topic)
 
-    first = asyncio.ensure_future(client.direct.subscribe("/state/#", handler))
+    first = asyncio.ensure_future(client.raw.subscribe("/state/#", handler))
     await asyncio.sleep(0)
-    await wait_or_dump(client.direct.subscribe("/state/#", handler), timeout=5)
+    await wait_or_dump(client.raw.subscribe("/state/#", handler), timeout=5)
     for _ in range(3):
         await asyncio.sleep(0)
 

@@ -10,7 +10,8 @@ import pytest
 
 from tests.broker import MosquittoBroker, internals, wait_or_dump, wait_until
 from tests.conftest import ConnectClient
-from wb_mqtt_lib import Client, Control, ControlType, Message, topics
+from wb_mqtt_lib import Client, Control, ControlType, Message
+from wb_mqtt_lib._convention import topics
 
 
 @pytest.mark.parametrize(
@@ -18,7 +19,7 @@ from wb_mqtt_lib import Client, Control, ControlType, Message, topics
     [
         ("get_control of a new device", 42),
         ("command and wait for the driver", True),
-        ("direct.read", {"/config/threshold": b"7"}),
+        ("raw.read", {"/config/threshold": b"7"}),
     ],
 )
 async def test_handler_waits_for_the_broker_inside_itself(
@@ -37,7 +38,7 @@ async def test_handler_waits_for_the_broker_inside_itself(
 
     relay.on_command(apply)
     await (await driver.create_device("other")).create_control("temp", ControlType.VALUE, value=42)
-    await driver.direct.publish("/config/threshold", "7", retain=True)
+    await driver.raw.publish("/config/threshold", "7", retain=True)
     remote_trigger = await client.get_control("dev/trigger")
     remote_relay = await client.get_control("dev/relay")
 
@@ -51,7 +52,7 @@ async def test_handler_waits_for_the_broker_inside_itself(
     calls = {
         "get_control of a new device": get_new_device,
         "command and wait for the driver": command_and_wait,
-        "direct.read": lambda: client.direct.read("/config/#"),
+        "raw.read": lambda: client.raw.read("/config/#"),
     }
     result = asyncio.get_running_loop().create_future()
 
@@ -80,22 +81,22 @@ async def test_concurrent_subscribe_and_unsubscribe_on_one_topic(
 
     first_batch, second_batch = handlers("first", 20), handlers("second", 20)
     await wait_or_dump(
-        asyncio.gather(*(client.direct.subscribe("/race/topic", handler) for handler in first_batch)),
+        asyncio.gather(*(client.raw.subscribe("/race/topic", handler) for handler in first_batch)),
         timeout=5,
     )
     await wait_or_dump(
         asyncio.gather(
-            *(client.direct.subscribe("/race/topic", handler) for handler in second_batch),
-            *(client.direct.unsubscribe(handler) for handler in first_batch),
+            *(client.raw.subscribe("/race/topic", handler) for handler in second_batch),
+            *(client.raw.unsubscribe(handler) for handler in first_batch),
         ),
         timeout=5,
     )
-    await client.direct.publish("/race/topic", "x")
+    await client.raw.publish("/race/topic", "x")
     await wait_until(lambda: len(received) == 20)
 
     await asyncio.sleep(0.2)
     assert sorted(received) == [("second", index) for index in range(20)]
-    await asyncio.gather(*(client.direct.unsubscribe(handler) for handler in second_batch))
+    await asyncio.gather(*(client.raw.unsubscribe(handler) for handler in second_batch))
     assert internals(client)["subscriptions"] == 0
     assert broker.unsubscriptions() == ["/race/topic"]
 
@@ -168,6 +169,6 @@ async def test_command_handler_creates_and_removes_a_device(connect: ConnectClie
     rebuild.on_command(on_rebuild)
     user = await connect("user")
     for _ in range(5):
-        await user.direct.publish("/devices/dev/controls/rebuild/on", "1")
+        await user.raw.publish("/devices/dev/controls/rebuild/on", "1")
 
     await wait_until(lambda: len(done) == 5, timeout=10)

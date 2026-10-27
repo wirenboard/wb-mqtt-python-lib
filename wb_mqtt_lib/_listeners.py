@@ -5,13 +5,13 @@ and other listeners never wait for it.
 
 import asyncio
 import inspect
-import logging
 import weakref
 from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
-from .tasks import is_cancelled_from_outside, log_failure
+from ._logs import get_logger, log_failure
+from ._tasks import is_cancelled_from_outside
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Events waiting in one queue before the log says the handler cannot keep up
 BACKLOG_WARNING = 100
@@ -27,7 +27,7 @@ CommandHandler = Callable[[Any, Any], HandlerResult]
 # handler(control, value, previous), for on_value, on_error, on_control_value, on_control_error,
 # and handler(device, error, previous) for on_error of a device
 ChangeHandler = Callable[[Any, Any, Any], HandlerResult]
-# handler(message), for client.direct
+# handler(message), for client.raw
 MessageHandler = Callable[[Any], HandlerResult]
 # handler(connected), for on_connection_change of the client
 ConnectionHandler = Callable[[bool], HandlerResult]
@@ -46,7 +46,7 @@ def check_handler_arguments(handler: Handler, count: int, registration: str) -> 
     Args:
         handler: the handler to check.
         count: how many arguments its events bring.
-        registration: where the handler is registered, on_value or direct for example, for the error text.
+        registration: where the handler is registered, on_value or raw for example, for the error text.
 
     Raises:
         TypeError: the handler does not take that many positional arguments.
@@ -142,7 +142,7 @@ class Listener:
                 self._backlog_reported = False
 
     def _get_failure_label(self, args: tuple) -> str:
-        # A direct handler gets a message, its topic tells which one broke the handler
+        # A raw handler gets a message, its topic tells which one broke the handler
         topic = getattr(args[0], "topic", None) if args else None
         on_topic = f" on {topic}" if isinstance(topic, str) else ""
         return f"Listener {self._description}{on_topic}"

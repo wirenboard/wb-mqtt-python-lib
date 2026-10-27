@@ -2,10 +2,17 @@
 Python library for MQTT and the Wiren Board convention.
 """
 
-from .broker_url import DEFAULT_BROKER_URL
-from .client import Client
-from .devices import Control, Device
-from .errors import (
+from ._client import Client
+from ._convention.devices import Control, Device
+from ._convention.values import (
+    ControlErrorFlags,
+    ControlMeta,
+    ControlSnapshot,
+    ControlType,
+    DeviceSnapshot,
+    TranslatedTitle,
+)
+from ._errors import (
     BrokerDisconnectedError,
     ClientClosedError,
     ControlMissingError,
@@ -14,15 +21,8 @@ from .errors import (
     MqttLibError,
     NotOwnError,
 )
-from .subscriber import Message
-from .values import (
-    ControlErrorFlags,
-    ControlMeta,
-    ControlSnapshot,
-    ControlType,
-    DeviceSnapshot,
-    TranslatedTitle,
-)
+from ._mqtt.broker_url import DEFAULT_BROKER_URL
+from ._mqtt.subscriber import Message
 
 __all__ = [
     "DEFAULT_BROKER_URL",

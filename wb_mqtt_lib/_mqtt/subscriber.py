@@ -8,18 +8,18 @@ and a second callback on the filter gets that from the subscription instead of f
 
 import asyncio
 import itertools
-import logging
 import time
 import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
-from . import broker_connection, topics
-from .errors import BrokerDisconnectedError, ClientClosedError
-from .tasks import retrieve_error
+from .._errors import BrokerDisconnectedError, ClientClosedError
+from .._logs import get_logger
+from .._tasks import retrieve_error
+from . import broker_connection, checks
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # As wb-rules subscribes. A clean session never gets an unacknowledged message again (MQTT 5, 4.4),
 # so QoS 1 would add a PUBACK per message and no delivery guarantee.
@@ -118,7 +118,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         """
         async with self._lock:
             self._connection = connection
-            # QoS 1, a QoS 0 marker would pass QoS 1 messages of direct subscriptions the broker still queues
+            # QoS 1, a QoS 0 marker would pass QoS 1 messages of raw subscriptions the broker still queues
             await connection.subscribe(f"{self._marker_prefix}+", 1)
             # In the order of numbers. A callback takes a live message from its oldest subscription,
             # that one must be at the broker first.
@@ -198,8 +198,8 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
             ClientClosedError: the client closes while waiting.
         """
         for topic_filter in topic_filters:
-            topics.check_filter(topic_filter)
-        broker_connection.check_qos(qos)
+            checks.check_filter(topic_filter)
+        checks.check_qos(qos)
         added_filters: list[str] = []
         try:
             # A new filter subscribes, a known one takes the callback and hands it the retained messages

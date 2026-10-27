@@ -1,21 +1,21 @@
 """
 Device and Control objects of own and foreign devices.
 
-An object keeps only the name and the device sync of the client, and reads the state
+An object keeps only the name and the device manager of the client, and reads the state
 at the moment of the call. Any number of objects for one name see the same state and are equal, so they
 are compared with ==, not with is. Only the client builds them.
 """
 
 from typing import Any, Mapping, Optional
 
-from .device_sync import DeviceSync
-from .listeners import (
+from .._listeners import (
     ChangeHandler,
     CommandHandler,
     ControlHandler,
     DeviceHandler,
     Handler,
 )
+from .device_manager import DeviceManager
 from .state import ControlRecord, DeviceRecord
 from .values import (
     ControlErrorFlags,
@@ -39,12 +39,12 @@ class Control:  # pylint: disable=too-many-public-methods
         TypeError: the service calls the constructor itself.
     """
 
-    def __init__(self, device: "Device", name: str, device_sync: Optional[DeviceSync] = None) -> None:
-        if device_sync is None:
+    def __init__(self, device: "Device", name: str, device_manager: Optional[DeviceManager] = None) -> None:
+        if device_manager is None:
             raise TypeError(_BUILT_BY_THE_CLIENT)
         self.device = device
         self.name = name
-        self._device_sync = device_sync
+        self._device_manager = device_manager
 
     def __repr__(self) -> str:
         return f"<Control {self.full_name} exists={self.exists} value={self.value!r}>"
@@ -56,12 +56,12 @@ class Control:  # pylint: disable=too-many-public-methods
         return hash(self.full_name)
 
     def _listen(self, event: str, handler: Any) -> Any:
-        self._device_sync.add_control_listener(self.device.name, self.name, event, handler)
+        self._device_manager.add_control_listener(self.device.name, self.name, event, handler)
         return handler
 
     @property
     def _record(self) -> Optional[ControlRecord]:
-        return self._device_sync.state.get_control(self.device.name, self.name)
+        return self._device_manager.state.get_control(self.device.name, self.name)
 
     @property
     def full_name(self) -> str:
@@ -183,7 +183,7 @@ class Control:  # pylint: disable=too-many-public-methods
         Events the handler has not started are dropped. A call that runs now is cancelled at its next await,
         unless remove_handler is called from that handler itself.
         """
-        self._device_sync.state.remove_control_listener(self.device.name, self.name, handler)
+        self._device_manager.state.remove_control_listener(self.device.name, self.name, handler)
 
     async def wait_value(self, expected: Any, timeout: float) -> Any:
         """
@@ -203,7 +203,7 @@ class Control:  # pylint: disable=too-many-public-methods
             TimeoutError: the value did not come in time.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        return await self._device_sync.wait_control_value(self.device.name, self.name, expected, timeout)
+        return await self._device_manager.wait_control_value(self.device.name, self.name, expected, timeout)
 
     async def set_value(self, value: Any) -> None:
         """
@@ -226,7 +226,7 @@ class Control:  # pylint: disable=too-many-public-methods
                 or the link is lost or the broker does not confirm it in 5 s.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.set_control_value(self.device.name, self.name, value)
+        await self._device_manager.set_control_value(self.device.name, self.name, value)
 
     async def set_error(self, error: ControlErrorFlags) -> None:
         """
@@ -238,7 +238,7 @@ class Control:  # pylint: disable=too-many-public-methods
             ControlMissingError: the control or its device does not exist.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.set_control_error(self.device.name, self.name, error)
+        await self._device_manager.set_control_error(self.device.name, self.name, error)
 
     async def update_meta(self, **fields: Any) -> None:
         """
@@ -255,12 +255,12 @@ class Control:  # pylint: disable=too-many-public-methods
             ControlMissingError: the control or its device does not exist.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.update_control_meta(self.device.name, self.name, **fields)
+        await self._device_manager.update_control_meta(self.device.name, self.name, **fields)
 
     async def remove(self) -> None:
         """
         Only for an own control. Erase everything the client published under the control, legacy
-        subtopics published through client.direct too. Listeners stay and see the control again if it is
+        subtopics published through client.raw too. Listeners stay and see the control again if it is
         created again.
 
         Nothing happens when the control does not exist, for example after remove() of its device.
@@ -269,7 +269,7 @@ class Control:  # pylint: disable=too-many-public-methods
             NotOwnError: the control is foreign.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.remove_control(self.device.name, self.name)
+        await self._device_manager.remove_control(self.device.name, self.name)
 
 
 class Device:  # pylint: disable=too-many-public-methods
@@ -283,30 +283,32 @@ class Device:  # pylint: disable=too-many-public-methods
         TypeError: the service calls the constructor itself.
     """
 
-    def __init__(self, name: str, device_sync: Optional[DeviceSync] = None) -> None:
-        if device_sync is None:
+    def __init__(self, name: str, device_manager: Optional[DeviceManager] = None) -> None:
+        if device_manager is None:
             raise TypeError(_BUILT_BY_THE_CLIENT)
         self.name = name
-        self._device_sync = device_sync
+        self._device_manager = device_manager
 
     def __repr__(self) -> str:
         return f"<Device {self.name} own={self.is_own} exists={self.exists}>"
 
     def __eq__(self, other: object) -> bool:
         return (
-            isinstance(other, Device) and self._device_sync is other._device_sync and self.name == other.name
+            isinstance(other, Device)
+            and self._device_manager is other._device_manager
+            and self.name == other.name
         )
 
     def __hash__(self) -> int:
         return hash(self.name)
 
     def _listen(self, event: str, handler: Any) -> Any:
-        self._device_sync.add_device_listener(self.name, event, handler)
+        self._device_manager.add_device_listener(self.name, event, handler)
         return handler
 
     @property
     def _record(self) -> Optional[DeviceRecord]:
-        return self._device_sync.state.get_device(self.name)
+        return self._device_manager.state.get_device(self.name)
 
     @property
     def exists(self) -> bool:
@@ -318,7 +320,7 @@ class Device:  # pylint: disable=too-many-public-methods
         """
         True for a device this client created and still publishes.
         """
-        return self._device_sync.state.is_own_device(self.name)
+        return self._device_manager.state.is_own_device(self.name)
 
     @property
     def title(self) -> TranslatedTitle:
@@ -344,8 +346,8 @@ class Device:  # pylint: disable=too-many-public-methods
         Controls that exist now, by name.
         """
         return {
-            name: Control(self, name, self._device_sync)
-            for name in self._device_sync.state.existing_control_names(self.name)
+            name: Control(self, name, self._device_manager)
+            for name in self._device_manager.state.existing_control_names(self.name)
         }
 
     def on_added(self, handler: DeviceHandler) -> DeviceHandler:
@@ -428,7 +430,7 @@ class Device:  # pylint: disable=too-many-public-methods
         Events the handler has not started are dropped. A call that runs now is cancelled at its next await,
         unless remove_handler is called from that handler itself.
         """
-        self._device_sync.state.remove_device_listener(self.name, handler)
+        self._device_manager.state.remove_device_listener(self.name, handler)
 
     async def create_control(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
@@ -476,7 +478,7 @@ class Device:  # pylint: disable=too-many-public-methods
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.create_control(
+        await self._device_manager.create_control(
             self.name,
             name,
             control_type,
@@ -491,7 +493,7 @@ class Device:  # pylint: disable=too-many-public-methods
             hidden=hidden,
             enum=enum,
         )
-        return Control(self, name, self._device_sync)
+        return Control(self, name, self._device_manager)
 
     async def set_error(self, error: ControlErrorFlags) -> None:
         """
@@ -504,7 +506,7 @@ class Device:  # pylint: disable=too-many-public-methods
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.set_device_error(self.name, error)
+        await self._device_manager.set_device_error(self.name, error)
 
     async def update_meta(self, title: TitleLike) -> None:
         """
@@ -517,12 +519,12 @@ class Device:  # pylint: disable=too-many-public-methods
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.update_device_meta(self.name, title)
+        await self._device_manager.update_device_meta(self.name, title)
 
     async def remove(self) -> None:
         """
         Only for an own device. Erase everything the client published under the device, legacy
-        subtopics published through client.direct too. A second call does nothing.
+        subtopics published through client.raw too. A second call does nothing.
 
         The erasure goes in three stages, each after the broker confirmed the one before: the values,
         errors and legacy meta subtopics of the controls, then their meta, the error of the device and its
@@ -533,4 +535,4 @@ class Device:  # pylint: disable=too-many-public-methods
             NotOwnError: the device is foreign.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        await self._device_sync.remove_device(self.name)
+        await self._device_manager.remove_device(self.name)

@@ -1,5 +1,5 @@
 """
-Device sync of a client. Foreign devices are read from the broker, own devices are published and take
+Device manager of a client. Foreign devices are read from the broker, own devices are published and take
 commands, the state lives in state.py.
 
 An operation on an own device changes the state and the publisher mirror without an await in between
@@ -8,22 +8,23 @@ and only then waits for the broker, so a cancelled call never leaves a change ha
 
 import asyncio
 import dataclasses
-import logging
 from typing import Any, Callable, Iterable, Optional
 
-from . import topics
-from .errors import (
+from .._errors import (
     BrokerDisconnectedError,
     ClientClosedError,
     ControlMissingError,
     DeviceTakenError,
     NotOwnError,
 )
-from .listeners import Handler, ListenerRegistry
-from .publisher import Publisher
+from .._listeners import Handler, ListenerRegistry
+from .._logs import get_logger
+from .._mqtt import checks
+from .._mqtt.publisher import Publisher
+from .._mqtt.subscriber import Message, Subscriber
+from .._tasks import TaskSet, is_cancelled_from_outside, retrieve_error
+from . import topics
 from .state import ControlRecord, DeviceRecord, Ownership, State
-from .subscriber import Message, Subscriber
-from .tasks import TaskSet, is_cancelled_from_outside, retrieve_error
 from .values import (
     ControlErrorFlags,
     ControlMeta,
@@ -41,13 +42,13 @@ from .values import (
     to_payload_and_value,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Name prefix of the tasks that finish create_device
 _CREATION_TASK_PREFIX = "create_"
 
 
-class DeviceSync:  # pylint: disable=too-many-public-methods
+class DeviceManager:  # pylint: disable=too-many-public-methods
     """
     Devices of one client: subscriptions, publication and the internal tasks around them.
 
@@ -161,8 +162,8 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         check_name(name, "device")
         title = TranslatedTitle.parse(title)
         device_topics = topics.DeviceTopics(
-            meta=topics.CheckedTopic(topics.device_meta(name)),
-            error=topics.CheckedTopic(topics.device_error(name)),
+            meta=checks.CheckedTopic(topics.device_meta(name)),
+            error=checks.CheckedTopic(topics.device_error(name)),
         )
         device = self.state.ensure_device(name)
         _check_not_created(name, device)
@@ -266,9 +267,9 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
         self._raise_if_closed()
         check_name(control_name, "control")
         control_topics = topics.ControlTopics(
-            value=topics.CheckedTopic(topics.control_value(device_name, control_name)),
-            meta=topics.CheckedTopic(topics.control_meta(device_name, control_name)),
-            error=topics.CheckedTopic(topics.control_error(device_name, control_name)),
+            value=checks.CheckedTopic(topics.control_value(device_name, control_name)),
+            meta=checks.CheckedTopic(topics.control_meta(device_name, control_name)),
+            error=checks.CheckedTopic(topics.control_error(device_name, control_name)),
         )
         try:
             control_type = ControlType(control_type)

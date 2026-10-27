@@ -13,7 +13,7 @@ import pytest
 
 from tests.broker import DeadLinkProxy, MosquittoBroker, wait_or_dump
 from wb_mqtt_lib import Client, Control, ControlType
-from wb_mqtt_lib import client as client_module
+from wb_mqtt_lib import _client as client_module
 
 # Debug mode logs callbacks that block the loop too long and coroutines that were never awaited.
 # The variable is read when an event loop is created, so it is set before pytest-asyncio creates one.

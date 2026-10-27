@@ -15,7 +15,7 @@ aiomqtt does not end the waits for PUBACK when the connection drops, they end by
 """
 
 import logging
-from typing import Any, Callable, Optional, Union
+from typing import Any, Callable, Optional
 
 import aiomqtt
 from paho.mqtt.matcher import MQTTMatcher
@@ -23,8 +23,9 @@ from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 from paho.mqtt.subscribeoptions import SubscribeOptions
 
+from .._logs import get_logger
 from .broker_url import BrokerAddress
-from .values import is_int, is_utf8_text
+from .checks import Payload
 
 # Matches topics against the filters of the subscriptions
 TopicMatcher = MQTTMatcher
@@ -41,13 +42,11 @@ PENDING_CALLS_WARNING = 10_000
 # MQTT reason codes of a rejected login, a bad user name or password and not authorized
 _LOGIN_REJECTED_CODES = (134, 135)
 
-# What a publication takes as its payload
-Payload = Union[str, bytes, bytearray, int, float, None]
 # Called for every message from the broker with its topic, payload, retain flag as published, QoS and
 # the numbers of the subscriptions it came for, None when the broker sent none
 PacketHandler = Callable[[str, bytes, bool, int, Optional[list[int]]], None]
 
-_logger = logging.getLogger(f"{__name__}.aiomqtt")
+_logger = get_logger(f"{__name__}.aiomqtt")
 
 
 class _LinkNoiseFilter(logging.Filter):  # pylint: disable=too-few-public-methods
@@ -210,33 +209,6 @@ class Connection:
         except aiomqtt.MqttError as error:
             raise LinkLost(str(error)) from error
         raise LinkLost("message stream ended")
-
-
-def check_qos(qos: int) -> None:
-    """
-    Reject a QoS paho cannot pack.
-
-    Raises:
-        ValueError: the QoS is not the int 0, 1 or 2. paho fails to pack 1.0 in a subscription.
-    """
-    if not is_int(qos) or qos not in (0, 1, 2):
-        raise ValueError(f"QoS must be 0, 1 or 2, got {qos!r}")
-
-
-def check_payload(payload: Payload) -> None:
-    """
-    Reject a payload paho does not take, and bool, which paho would send as «True».
-
-    Raises:
-        TypeError: the payload is not str, bytes, bytearray, int, float or None, it is a bool, or a str
-            that is not valid UTF-8.
-    """
-    if not (is_int(payload) or isinstance(payload, (str, bytes, bytearray, float, type(None)))):
-        raise TypeError(
-            f"payload must be str, bytes, bytearray, int, float or None, got {type(payload).__name__}"
-        )
-    if isinstance(payload, str) and not is_utf8_text(payload):
-        raise TypeError("payload is not valid UTF-8")
 
 
 def _as_link_error(error: aiomqtt.MqttError) -> LinkError:

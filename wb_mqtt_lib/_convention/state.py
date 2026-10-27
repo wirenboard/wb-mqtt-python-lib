@@ -2,17 +2,17 @@
 State of own and foreign devices of one client, by name.
 
 Every change the listeners can see goes through here, becomes events for them and wakes the waits.
-device_sync.py sets the fields nobody listens to itself, the topics of own records, next_order and
-the last payload. Nothing here talks to the broker, device_sync.py does that.
+device_manager.py sets the fields nobody listens to itself, the topics of own records, next_order and
+the last payload. Nothing here talks to the broker, device_manager.py does that.
 """
 
 import asyncio
 import enum
-import logging
 import math
 from typing import Any, Callable, Optional, Union
 
-from .listeners import Handler, ListenerRegistry, ListenerSet, check_handler_arguments
+from .._listeners import Handler, ListenerRegistry, ListenerSet, check_handler_arguments
+from .._logs import get_logger
 from .topics import ControlTopics, DeviceTopics
 from .values import (
     ControlErrorFlags,
@@ -23,7 +23,7 @@ from .values import (
     parse_value,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Control events that the device repeats to its own listeners
 _DEVICE_EVENT_OF = {

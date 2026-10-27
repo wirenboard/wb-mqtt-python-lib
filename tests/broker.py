@@ -19,7 +19,8 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import aiomqtt
 
-from wb_mqtt_lib import ControlType, broker_connection
+from wb_mqtt_lib import ControlType
+from wb_mqtt_lib._mqtt import broker_connection
 
 HOST = "127.0.0.1"
 MOSQUITTO = shutil.which("mosquitto") or "/usr/sbin/mosquitto"
@@ -41,7 +42,7 @@ BROKER_READS: dict[str, Callable[[Any], Awaitable[Any]]] = {
     "get_device_names": lambda client: client.get_device_names(),
     "get_device_snapshot": lambda client: client.get_device_snapshot("dev"),
     "remove_driver_devices": lambda client: client.remove_driver_devices(),
-    "direct.read": lambda client: client.direct.read("/x/#"),
+    "raw.read": lambda client: client.raw.read("/x/#"),
 }
 
 
@@ -55,8 +56,8 @@ def internals(client: Any) -> dict[str, int]:
         "replay mirror": client._publisher.mirror_size,
         "listeners": len(client._listener_registry),
         "service tasks": len(client._service_tasks),
-        "internal tasks": client._device_sync.task_count,
-        "waits": client._device_sync.state.wait_count,
+        "internal tasks": client._device_manager.task_count,
+        "waits": client._device_manager.state.wait_count,
     }
 
 
@@ -445,7 +446,7 @@ async def publish_retained(client: Any, retained: dict[str, str]) -> None:
     Publish retained messages through a client in the order given, as a driver leaves them in the broker.
     """
     for topic, payload in retained.items():
-        await client.direct.publish(topic, payload, retain=True)
+        await client.raw.publish(topic, payload, retain=True)
 
 
 async def read_retained(port: int, topic_filter: str, timeout: float = 5.0) -> dict[str, bytes]:

@@ -1,15 +1,12 @@
 """
-Background tasks the library keeps a reference to, and how failures of service code are logged.
+Background tasks the library keeps a reference to.
 """
 
 import asyncio
 import logging
 from typing import Any, Coroutine, Iterable, Optional
 
-from .errors import BrokerDisconnectedError, ControlMissingError
-
-# Normal operation while the broker or a driver restarts, not a bug in the service
-_EXPECTED_FAILURES = (BrokerDisconnectedError, ControlMissingError)
+from ._logs import log_failure
 
 
 def is_cancelled_from_outside() -> bool:
@@ -18,19 +15,6 @@ def is_cancelled_from_outside() -> bool:
     """
     task = asyncio.current_task()
     return task is not None and task.cancelling() > 0
-
-
-def log_failure(logger: logging.Logger, description: str, error: BaseException) -> None:
-    """
-    Log an exception that service code raised in a handler or a background task.
-
-    A lost broker link or a control that is gone during a driver restart is one WARNING line,
-    anything else is an ERROR with the traceback.
-    """
-    if isinstance(error, _EXPECTED_FAILURES):
-        logger.warning("%s failed: %s", description, error)
-    else:
-        logger.error("%s failed", description, exc_info=error)
 
 
 def retrieve_error(future: asyncio.Future) -> None:

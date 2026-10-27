@@ -85,7 +85,7 @@ async def test_closed_client_is_garbage_collected(broker: MosquittoBroker) -> No
         device = await client.create_device("dev")
         level = await device.create_control("level", ControlType.VALUE, value=0)
         level.on_value(lambda control, value, previous: None)
-        await client.direct.subscribe("/direct/#", lambda message: None)
+        await client.raw.subscribe("/raw/#", lambda message: None)
         await client.get_control("missing/ctl")
         client.start_task(asyncio.sleep(60), "background work")
         await level.set_value(1)
@@ -126,9 +126,9 @@ async def test_create_and_remove_cycles_do_not_grow(connect: ConnectClient, clie
     assert (internals(client), internals(reader)) == (client_counts, reader_counts)
 
 
-async def test_direct_subscribe_read_and_unsubscribe_cycles_leave_nothing(client: Client) -> None:
+async def test_raw_subscribe_read_and_unsubscribe_cycles_leave_nothing(client: Client) -> None:
     """
-    A new direct handler per cycle, a one-off read and removal of the handler.
+    A new raw handler per cycle, a one-off read and removal of the handler.
     """
 
     async def cycle(index: int) -> None:
@@ -138,18 +138,18 @@ async def test_direct_subscribe_read_and_unsubscribe_cycles_leave_nothing(client
             if not received.done():
                 received.set_result(message)
 
-        await client.direct.subscribe(f"/leak/{index % 5}/#", handler)
-        await client.direct.publish(f"/leak/{index % 5}/value", str(index), retain=True)
+        await client.raw.subscribe(f"/leak/{index % 5}/#", handler)
+        await client.raw.publish(f"/leak/{index % 5}/value", str(index), retain=True)
         await wait_or_dump(received, 5)
-        await client.direct.read("/leak/#")
-        await client.direct.unsubscribe(handler)
+        await client.raw.read("/leak/#")
+        await client.raw.unsubscribe(handler)
 
     growth = await wait_or_dump(object_growth(cycle), timeout=120)
 
     assert not growth
     assert internals(client) == {
         "subscriptions": 0,
-        # own retained direct publications, kept for the replay after reconnect
+        # own retained raw publications, kept for the replay after reconnect
         "replay mirror": 5,
         "listeners": 0,
         "service tasks": 0,
@@ -240,9 +240,9 @@ async def test_values_and_errors_without_meta_under_new_names_leave_nothing(
 
     async def cycle(index: int) -> None:
         topic = f"/devices/dev/controls/n{index}"
-        await driver.direct.publish(topic, "1", retain=True)
-        await driver.direct.publish(topic, "", retain=True)
-        await driver.direct.publish(f"{topic}/meta/error", "timeout")
+        await driver.raw.publish(topic, "1", retain=True)
+        await driver.raw.publish(topic, "", retain=True)
+        await driver.raw.publish(f"{topic}/meta/error", "timeout")
         # Messages of one device arrive in order, so the erasure is applied once this value is
         await known.set_value(index)
         await remote.wait_value(index, timeout=5)

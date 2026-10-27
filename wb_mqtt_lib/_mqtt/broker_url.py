@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 from urllib.parse import unquote, urlparse
 
-from .topics import is_refused_by_broker
+from .checks import is_refused_by_broker
 
 DEFAULT_BROKER_URL = "unix:///var/run/mosquitto/mosquitto.sock"
 

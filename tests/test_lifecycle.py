@@ -36,10 +36,10 @@ from wb_mqtt_lib import (
     ControlErrorFlags,
     ControlType,
 )
-from wb_mqtt_lib import subscriber as subscriber_module
+from wb_mqtt_lib._mqtt import subscriber as subscriber_module
 
-# A direct subscription waits for the broker like the reads and must not stay as subscribed after close
-DEAD_LINK_WAITS = {**BROKER_READS, "direct.subscribe": lambda client: client.direct.subscribe("/x/#", print)}
+# A raw subscription waits for the broker like the reads and must not stay as subscribed after close
+DEAD_LINK_WAITS = {**BROKER_READS, "raw.subscribe": lambda client: client.raw.subscribe("/x/#", print)}
 
 
 async def test_close_from_a_command_handler(connect: ConnectClient, client: Client) -> None:
@@ -58,7 +58,7 @@ async def test_close_from_a_command_handler(connect: ConnectClient, client: Clie
 
     stop.on_command(on_stop)
     user = await connect("user")
-    await user.direct.publish("/devices/dev/controls/stop/on", "1")
+    await user.raw.publish("/devices/dev/controls/stop/on", "1")
 
     assert await wait_or_dump(closed, timeout=5) is False
     await wait_until(lambda: internals(client)["listeners"] == 0 and internals(client)["service tasks"] == 0)
@@ -144,20 +144,20 @@ async def test_close_wakes_pending_waits(client: Client, level: Control) -> None
 async def test_calls_after_close_raise_instead_of_hanging(driver: Client, client: Client) -> None:
     """
     After close writing, waiting and new listeners raise ClientClosedError. Fields keep the last state.
-    Handlers still come off, a direct filter leaves the client with its last handler.
+    Handlers still come off, a raw filter leaves the client with its last handler.
     """
     await (await driver.create_device("other")).create_control("x", ControlType.VALUE, value=1)
     device = await client.create_device("dev")
     temp = await device.create_control("temp", ControlType.VALUE, value=1)
     foreign = await client.get_control("other/x")
-    direct_handler = await client.direct.subscribe("/direct/#", lambda message: None)
+    raw_handler = await client.raw.subscribe("/raw/#", lambda message: None)
     control_handler = foreign.on_value(lambda control, value, previous: None)
     connection_handler = client.on_connection_change(lambda connected: None)
     subscriptions = internals(client)["subscriptions"]
 
     await wait_or_dump(client.close(), timeout=5)
 
-    await wait_or_dump(client.direct.unsubscribe(direct_handler), timeout=2)
+    await wait_or_dump(client.raw.unsubscribe(raw_handler), timeout=2)
     foreign.remove_handler(control_handler)
     client.remove_handler(connection_handler)
     assert internals(client)["subscriptions"] == subscriptions - 1
@@ -174,9 +174,9 @@ async def test_calls_after_close_raise_instead_of_hanging(driver: Client, client
         client.get_device_names(),
         client.remove_driver_devices(),
         foreign.wait_value(1, timeout=1),
-        client.direct.publish("/x", "1"),
-        client.direct.read("/x"),
-        client.direct.subscribe("/x", print),
+        client.raw.publish("/x", "1"),
+        client.raw.read("/x"),
+        client.raw.subscribe("/x", print),
     ]
     for call in calls:
         with pytest.raises(ClientClosedError):
@@ -348,7 +348,7 @@ async def test_close_ends_a_broker_read_on_a_dead_link_with_client_closed(
 ) -> None:
     """
     A call that reads the broker waits for SUBACK on a link that is dead but not closed yet. close() ends it
-    with ClientClosedError, within the 5 s of that wait, not with BrokerDisconnectedError. A direct
+    with ClientClosedError, within the 5 s of that wait, not with BrokerDisconnectedError. A raw
     subscription does not stay as if it were subscribed.
     """
     proxy, client = dead_link
@@ -444,9 +444,7 @@ async def test_close_inside_a_task_that_close_cancels_does_not_wait_for_itself(
     assert not client.is_connected
 
 
-@pytest.mark.parametrize(
-    "call", ["remove", "create_device", "update_meta", "create_control", "direct.publish"]
-)
+@pytest.mark.parametrize("call", ["remove", "create_device", "update_meta", "create_control", "raw.publish"])
 async def test_close_ends_a_change_waiting_for_the_broker_with_client_closed(
     connect: ConnectClient, monkeypatch: pytest.MonkeyPatch, call: str
 ) -> None:
@@ -477,7 +475,7 @@ async def test_close_ends_a_change_waiting_for_the_broker_with_client_closed(
         "create_device": lambda: client.create_device("X"),
         "update_meta": lambda: control.update_meta(units="V"),
         "create_control": lambda: device.create_control("new", ControlType.VALUE),
-        "direct.publish": lambda: client.direct.publish("/events/x", "1"),
+        "raw.publish": lambda: client.raw.publish("/events/x", "1"),
     }
     pending = asyncio.ensure_future(calls[call]())
     await wait_until(lambda: bool(held))

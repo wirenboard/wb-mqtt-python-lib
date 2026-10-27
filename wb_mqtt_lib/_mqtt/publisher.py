@@ -8,21 +8,21 @@ After reconnect a new session queues the whole mirror again, the broker on the c
 """
 
 import asyncio
-import logging
 from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from . import broker_connection, topics
-from .errors import BrokerDisconnectedError, ClientClosedError
-from .tasks import retrieve_error
+from .._errors import BrokerDisconnectedError, ClientClosedError
+from .._logs import get_logger
+from .._tasks import retrieve_error
+from . import broker_connection, checks
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 @dataclass(frozen=True)
 class _MirrorEntry:
-    payload: broker_connection.Payload
+    payload: checks.Payload
     qos: int
     # Stage of an erasure, a later stage goes out after the broker confirmed the earlier one
     stage: int = 0
@@ -62,7 +62,7 @@ class _Publication:  # pylint: disable=too-many-instance-attributes
     """
 
     topic: str
-    payload: broker_connection.Payload
+    payload: checks.Payload
     qos: int
     retain: bool
     # The mirror entry a retained publication carries. One whose entry is no longer the current one
@@ -177,7 +177,7 @@ class Publisher:
     async def publish(  # pylint: disable=too-many-arguments
         self,
         topic: str,
-        payload: broker_connection.Payload = None,
+        payload: checks.Payload = None,
         qos: int = 1,
         retain: bool = False,
         *,
@@ -203,10 +203,10 @@ class Publisher:
             ClientClosedError: the client closes before the broker confirmed the message.
         """
         # Checks, and the payload in the form the mirror keeps
-        if not isinstance(topic, topics.CheckedTopic):
-            topics.check_topic(topic)
-        broker_connection.check_qos(qos)
-        broker_connection.check_payload(payload)
+        if not isinstance(topic, checks.CheckedTopic):
+            checks.check_topic(topic)
+        checks.check_qos(qos)
+        checks.check_payload(payload)
         if payload in ("", b""):
             # An empty payload erases a retained message, the mirror keeps erasures as None
             payload = None
@@ -242,7 +242,7 @@ class Publisher:
         self._send_queued(session)
         await asyncio.shield(batch.future)
 
-    def queue_retained(self, messages: Sequence[tuple[str, broker_connection.Payload]]) -> asyncio.Future:
+    def queue_retained(self, messages: Sequence[tuple[str, checks.Payload]]) -> asyncio.Future:
         """
         Put own retained messages into the mirror and the queue together, in the order given, QoS 1.
 
@@ -280,9 +280,7 @@ class Publisher:
             if mirror_entry.payload is not None and (own_topic == topic or own_topic.startswith(prefix))
         ]
 
-    def _put_in_mirror(
-        self, topic: str, payload: broker_connection.Payload, qos: int, stage: int = 0
-    ) -> _MirrorEntry:
+    def _put_in_mirror(self, topic: str, payload: checks.Payload, qos: int, stage: int = 0) -> _MirrorEntry:
         current_entry = self._mirror.get(topic)
         if current_entry is None or current_entry.payload is None or payload is None:
             # Appearing again and erasing go to the end. The replay keeps the order the state was built in,
@@ -305,7 +303,7 @@ class Publisher:
     # Queue of the session and sending
     # ------------------------------------------------------------
 
-    def _queue_staged(self, staged: Sequence[tuple[str, broker_connection.Payload, int]]) -> asyncio.Future:
+    def _queue_staged(self, staged: Sequence[tuple[str, checks.Payload, int]]) -> asyncio.Future:
         """
         Put retained messages into the mirror and the queue in the order given, QoS 1, with a barrier
         where the stage changes.
