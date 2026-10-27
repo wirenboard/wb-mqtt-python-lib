@@ -15,7 +15,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
-from . import link, topics
+from . import broker_connection, topics
 from .errors import BrokerDisconnectedError, ClientClosedError
 from .tasks import retrieve_error
 
@@ -72,10 +72,10 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
     """
 
     def __init__(self) -> None:
-        self._connection: Optional[link.Connection] = None
+        self._connection: Optional[broker_connection.Connection] = None
         self._subscriptions: dict[str, _Subscription] = {}
         self._subscriptions_by_number: dict[int, _Subscription] = {}
-        self._topic_matcher = link.TopicMatcher()
+        self._topic_matcher = broker_connection.TopicMatcher()
         # How many subscriptions each callback has, a callback with one needs no check for repeats
         self._subscription_counts: Counter[MessageCallback] = Counter()
         self._subscription_numbers = itertools.count(1)
@@ -105,7 +105,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
     # Connection and closing
     # ------------------------------------------------------------
 
-    async def connection_restored(self, connection: link.Connection) -> None:
+    async def connection_restored(self, connection: broker_connection.Connection) -> None:
         """
         Subscribe again after (re)connect, the broker drops subscriptions with a clean session.
 
@@ -118,7 +118,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         """
         async with self._lock:
             self._connection = connection
-            # QoS 1, a QoS 0 marker would pass QoS 1 messages of raw subscriptions the broker still queues
+            # QoS 1, a QoS 0 marker would pass QoS 1 messages of direct subscriptions the broker still queues
             await connection.subscribe(f"{self._marker_prefix}+", 1)
             # In the order of numbers. A callback takes a live message from its oldest subscription,
             # that one must be at the broker first.
@@ -199,7 +199,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         """
         for topic_filter in topic_filters:
             topics.check_filter(topic_filter)
-        link.check_qos(qos)
+        broker_connection.check_qos(qos)
         added_filters: list[str] = []
         try:
             # A new filter subscribes, a known one takes the callback and hands it the retained messages
@@ -213,7 +213,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
                         if self._connected:
                             try:
                                 await self._send_subscribe(topic_filter, subscription)
-                            except link.LinkError as error:
+                            except broker_connection.LinkError as error:
                                 # Restored by connection_restored after reconnect
                                 logger.debug("Subscription to %s deferred: %s", topic_filter, error)
                     elif callback not in subscription.callbacks:
@@ -275,7 +275,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
             if self._connected and not self._closing:
                 try:
                     await self._connection.unsubscribe(topic_filter)
-                except link.LinkError as error:
+                except broker_connection.LinkError as error:
                     logger.debug("Unsubscribe from %s skipped: %s", topic_filter, error)
 
     async def wait_retained_end(self) -> None:
@@ -303,7 +303,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         try:
             try:
                 await self._publish_marker(marker_number)
-            except link.LinkLost as error:
+            except broker_connection.LinkLost as error:
                 raise BrokerDisconnectedError(f"the end of retained delivery is unknown: {error}") from error
             try:
                 await asyncio.wait_for(marker_received, max(deadline - loop.time(), 0))
@@ -498,7 +498,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         self._pending_retained.add(subscription)
         try:
             await self._connection.subscribe(topic_filter, subscription.qos, subscription.number)
-        except link.AckTimeout as error:
+        except broker_connection.AckTimeout as error:
             if not late_ack_ok:
                 raise
             logger.debug("SUBACK for %s is late: %s", topic_filter, error)
@@ -513,7 +513,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         """
         try:
             await self._connection.publish(self._get_marker_topic(marker_number), "2", 1, False)
-        except link.AckTimeout as error:
+        except broker_connection.AckTimeout as error:
             logger.debug("PUBACK of marker %d is late: %s", marker_number, error)
 
     def _get_marker_topic(self, marker_number: int) -> str:

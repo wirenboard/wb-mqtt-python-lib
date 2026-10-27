@@ -230,7 +230,7 @@ async def test_outside_change_of_own_device_lasts_until_reconnect(
     before = await read_retained(broker.port, "/devices/dev/#")
     other = await connect("other")
     await publish_retained(other, change)
-    # Its raw retained would come back after the broker restart
+    # Its direct retained would come back after the broker restart
     await other.close()
     changed = {topic: payload for topic, payload in before.items() if topic not in change}
     changed.update({topic: payload.encode() for topic, payload in change.items() if payload})
@@ -554,7 +554,7 @@ async def test_remove_driver_devices_finds_legacy_signatures_and_names_what_it_e
             "/devices/stale/meta/driver": "service",
         },
     )
-    await old.raw.publish("/devices/garbled/meta", b'{"driver": "service", "title": "\xff"}', retain=True)
+    await old.direct.publish("/devices/garbled/meta", b'{"driver": "service", "title": "\xff"}', retain=True)
     await old.close()
     client = await connect("service")
     await (await client.create_device("current")).create_control("c", ControlType.VALUE, value=1)

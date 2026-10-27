@@ -1,12 +1,12 @@
 """
-client.raw, for MQTT topics outside the Wiren Board convention.
+client.direct, for MQTT topics outside the Wiren Board convention.
 """
 
 import asyncio
 from typing import Callable
 
+from .broker_connection import Payload
 from .errors import BrokerDisconnectedError, ClientClosedError
-from .link import Payload
 from .listeners import (
     Handler,
     Listener,
@@ -19,9 +19,9 @@ from .publisher import Publisher
 from .subscriber import SUBSCRIPTION_QOS, Subscriber
 
 
-class RawTopics:
+class DirectTopics:
     """
-    client.raw: subscription, one-off read and publication of any topic.
+    client.direct: subscription, one-off read and publication of any topic.
 
     The client builds it with its own subscriber, publisher and listener registry. is_closed tells whether
     close() of the client was called.
@@ -68,9 +68,9 @@ class RawTopics:
             ClientClosedError: the client is closed or closes while waiting.
         """
         self._raise_if_closed()
-        check_handler_arguments(handler, 1, "raw")
+        check_handler_arguments(handler, 1, "direct")
         if handler not in self._handlers:
-            listener = self._listener_registry.create_listener(handler, f"raw {get_handler_name(handler)}")
+            listener = self._listener_registry.create_listener(handler, f"direct {get_handler_name(handler)}")
             self._handlers[handler] = (listener, [])
         entry = self._handlers[handler]
         listener, filters = entry

@@ -47,7 +47,7 @@ async def test_client_works_over_transport(
     commands = []
     relay.on_command(lambda control, value: commands.append(value))
 
-    await client.raw.publish("/devices/test_dev/controls/relay/on", "1")
+    await client.direct.publish("/devices/test_dev/controls/relay/on", "1")
 
     await wait_until(lambda: commands == [True])
     retained = await read_retained(broker.port, "/devices/test_dev/controls/relay")
@@ -84,7 +84,7 @@ async def test_subscriptions_go_with_qos_0_and_publications_with_qos_1(
     broker: MosquittoBroker, client: Client, driver: Client
 ) -> None:
     """
-    The client subscribes with QoS 0 as wb-rules does, by the convention and raw by default. Only the
+    The client subscribes with QoS 0 as wb-rules does, by the convention and direct by default. Only the
     markers that end retained delivery come with QoS 1. Publications keep QoS 1.
     """
     remote = await driver.create_device("remote")
@@ -94,12 +94,12 @@ async def test_subscriptions_go_with_qos_0_and_publications_with_qos_1(
     relay.on_command(lambda control, value: None)
     await client.get_control("remote/level")
     await client.get_device_names()
-    raw_messages: list[Message] = []
-    await client.raw.subscribe("/raw/#", raw_messages.append)
+    direct_messages: list[Message] = []
+    await client.direct.subscribe("/direct/#", direct_messages.append)
     published: list[Message] = []
-    await driver.raw.subscribe("/devices/test_dev/controls/relay", published.append, qos=1)
-    await driver.raw.publish("/raw/x", "1", qos=1)
-    await wait_until(lambda: bool(raw_messages and published))
+    await driver.direct.subscribe("/devices/test_dev/controls/relay", published.append, qos=1)
+    await driver.direct.publish("/direct/x", "1", qos=1)
+    await wait_until(lambda: bool(direct_messages and published))
 
     subscriptions = broker.subscriptions()
 
@@ -108,9 +108,9 @@ async def test_subscriptions_go_with_qos_0_and_publications_with_qos_1(
 
     assert granted("/devices/test_dev/controls/relay/on") == {0}
     assert granted("/devices/remote/controls/level") == {0}
-    assert granted("/raw/x") == {0}
+    assert granted("/direct/x") == {0}
     assert {qos for topic_filter, qos in subscriptions if topic_filter.startswith("/wbretainhack/")} == {1}
-    assert raw_messages[0].qos == 0
+    assert direct_messages[0].qos == 0
     assert published[0].qos == 1
 
 

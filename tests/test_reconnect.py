@@ -38,7 +38,7 @@ from wb_mqtt_lib import (
     Control,
     ControlType,
     Message,
-    link,
+    broker_connection,
 )
 from wb_mqtt_lib import publisher as publisher_module
 from wb_mqtt_lib import subscriber as subscriber_module
@@ -50,7 +50,7 @@ OWN_DEVICE = {
     "/devices/dev/controls/temp": b"21",
 }
 # Retained changes, the topic of each and what the broker keeps after it. A value of an own control returns
-# before PUBACK, the meta and a raw message wait for it.
+# before PUBACK, the meta and a direct message wait for it.
 RETAINED_CHANGES: dict[str, tuple[Callable[[Client, Control], Awaitable[None]], str, bytes]] = {
     "set_value": (lambda client, temp: temp.set_value(2), "/devices/dev/controls/temp", b"2"),
     "update_meta": (
@@ -58,7 +58,11 @@ RETAINED_CHANGES: dict[str, tuple[Callable[[Client, Control], Awaitable[None]], 
         "/devices/dev/controls/temp/meta",
         b'{"type": "value", "readonly": false, "hidden": false, "units": "V", "order": 1}',
     ),
-    "raw.publish": (lambda client, temp: client.raw.publish("/state/x", "1", retain=True), "/state/x", b"1"),
+    "direct.publish": (
+        lambda client, temp: client.direct.publish("/state/x", "1", retain=True),
+        "/state/x",
+        b"1",
+    ),
 }
 
 
@@ -104,7 +108,7 @@ async def test_offline_own_state_goes_out_after_reconnect_and_events_fail(
     broker: MosquittoBroker, driver: Client, client: Client
 ) -> None:
     """
-    Own value and a control created without a link are kept and go out after reconnect. Commands and raw
+    Own value and a control created without a link are kept and go out after reconnect. Commands and direct
     events fail at once.
     """
     await (await driver.create_device("relays")).create_control("K1", ControlType.SWITCH, value=False)
@@ -120,7 +124,7 @@ async def test_offline_own_state_goes_out_after_reconnect_and_events_fail(
     with pytest.raises(BrokerDisconnectedError):
         await wait_or_dump(relay.set_value(True), timeout=1)
     with pytest.raises(BrokerDisconnectedError):
-        await wait_or_dump(client.raw.publish("/events/x", "1"), timeout=1)
+        await wait_or_dump(client.direct.publish("/events/x", "1"), timeout=1)
     await asyncio.to_thread(broker.start)
 
     await wait_until(lambda: client.is_connected, timeout=10)
@@ -186,7 +190,7 @@ async def test_restart_storm_ends_in_consistent_state(
     await wait_until(lambda: internals(client) == client_baseline and internals(driver) == driver_baseline)
     # An attempt that broke right after the socket opened leaves the misc task of aiomqtt until paho closes
     # that socket by keepalive
-    await wait_for_task_count(tasks_before, timeout=2 * link.KEEPALIVE_S)
+    await wait_for_task_count(tasks_before, timeout=2 * broker_connection.KEEPALIVE_S)
 
 
 async def test_command_reported_as_failed_is_not_delivered_after_reconnect(
@@ -256,17 +260,17 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
         await wait_until(lambda: not client.is_connected)
     received: list[Message] = []
     refused = [
-        (client.raw.publish("a/+/b", "x", retain=True), ValueError),
-        (client.raw.publish("", "x", retain=True), ValueError),
-        (client.raw.publish("a/#", "x", retain=True), ValueError),
-        (client.raw.publish("a/b", "x", retain=True, qos=3), ValueError),
-        (client.raw.publish("a/b", "x", retain=True, qos=True), ValueError),
-        (client.raw.publish("a/b", "x", retain=True, qos=1.0), ValueError),
-        (client.raw.publish("a/b", {"a": 1}, retain=True), TypeError),
-        (client.raw.publish("a/b", True, retain=True), TypeError),
-        (client.raw.publish("a/b", "a\udcff", retain=True), TypeError),
+        (client.direct.publish("a/+/b", "x", retain=True), ValueError),
+        (client.direct.publish("", "x", retain=True), ValueError),
+        (client.direct.publish("a/#", "x", retain=True), ValueError),
+        (client.direct.publish("a/b", "x", retain=True, qos=3), ValueError),
+        (client.direct.publish("a/b", "x", retain=True, qos=True), ValueError),
+        (client.direct.publish("a/b", "x", retain=True, qos=1.0), ValueError),
+        (client.direct.publish("a/b", {"a": 1}, retain=True), TypeError),
+        (client.direct.publish("a/b", True, retain=True), TypeError),
+        (client.direct.publish("a/b", "a\udcff", retain=True), TypeError),
         *(
-            (client.raw.publish(topic, "x", retain=True), ValueError)
+            (client.direct.publish(topic, "x", retain=True), ValueError)
             for topic in [
                 "a\0b",
                 "a/\x1fb",
@@ -278,10 +282,10 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
                 "/".join(["a"] * 202),
             ]
         ),
-        (client.raw.subscribe("a/b", received.append, qos=3), ValueError),
-        (client.raw.subscribe("a/b", received.append, qos=1.0), ValueError),
+        (client.direct.subscribe("a/b", received.append, qos=3), ValueError),
+        (client.direct.subscribe("a/b", received.append, qos=1.0), ValueError),
         *(
-            (client.raw.subscribe(topic_filter, received.append), ValueError)
+            (client.direct.subscribe(topic_filter, received.append), ValueError)
             for topic_filter in [
                 "zigbee2mqtt/#/devices",
                 "",
@@ -306,8 +310,8 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
     await asyncio.to_thread(broker.start if offline else broker.restart)
     await wait_until(lambda: client.is_connected, timeout=10)
     await wait_retained(broker.port, "/devices/dev/#", OWN_DEVICE)
-    await client.raw.subscribe("zigbee2mqtt/#", received.append)
-    await client.raw.publish("zigbee2mqtt/bridge/state", "online")
+    await client.direct.subscribe("zigbee2mqtt/#", received.append)
+    await client.direct.publish("zigbee2mqtt/bridge/state", "online")
     await wait_until(lambda: len(received) == 1)
 
 
@@ -319,15 +323,15 @@ async def test_state_gone_with_a_restart_is_not_handed_over_after_reconnect(
 
     A topic that left the broker with its restart does not reach a read of the subscribed filter.
     """
-    await driver.raw.publish("/state/x", "1", retain=True)
+    await driver.direct.publish("/state/x", "1", retain=True)
     await driver.close()
     seen: list[Message] = []
-    await client.raw.subscribe("/state/#", seen.append)
+    await client.direct.subscribe("/state/#", seen.append)
     await wait_until(lambda: len(seen) == 1)
 
     await restart_broker(broker, client)
 
-    assert await wait_or_dump(client.raw.read("/state/#"), timeout=5) == {}
+    assert await wait_or_dump(client.direct.read("/state/#"), timeout=5) == {}
 
 
 async def test_retained_command_left_while_offline_is_erased_after_reconnect(
@@ -344,50 +348,50 @@ async def test_retained_command_left_while_offline_is_erased_after_reconnect(
     other = await connect("other")
 
     await proxy.drop(client)
-    await other.raw.publish("/devices/dev/controls/relay/on", "1", retain=True)
+    await other.direct.publish("/devices/dev/controls/relay/on", "1", retain=True)
     await proxy.restore(client)
 
     await wait_retained(broker.port, "/devices/dev/controls/relay/on", {})
     assert not commands
-    await other.raw.publish("/devices/dev/controls/relay/on", "1")
+    await other.direct.publish("/devices/dev/controls/relay/on", "1")
     await wait_until(lambda: commands == [True])
 
 
-async def test_raw_subscribe_without_a_link_returns_and_gets_retained_after_reconnect(
+async def test_direct_subscribe_without_a_link_returns_and_gets_retained_after_reconnect(
     driver: Client, dead_link: tuple[DeadLinkProxy, Client]
 ) -> None:
     """
-    raw.subscribe without a link returns at once and keeps the subscription. What the broker keeps under
+    direct.subscribe without a link returns at once and keeps the subscription. What the broker keeps under
     the filter comes as retained after reconnect.
     """
     proxy, client = dead_link
-    await driver.raw.publish("/state/x", "1", retain=True)
+    await driver.direct.publish("/state/x", "1", retain=True)
     received: list[Message] = []
 
     await proxy.drop(client)
-    await wait_or_dump(client.raw.subscribe("/state/#", received.append), timeout=1)
+    await wait_or_dump(client.direct.subscribe("/state/#", received.append), timeout=1)
     await proxy.restore(client)
 
     await wait_until(lambda: len(received) == 1)
     assert (received[0].topic, received[0].payload, received[0].retain) == ("/state/x", b"1", True)
 
 
-async def test_raw_subscription_and_retained_publication_before_connect_take_effect_once_connected(
+async def test_direct_subscription_and_retained_publication_before_connect_take_effect_once_connected(
     broker: MosquittoBroker, driver: Client
 ) -> None:
     """
-    Before connect() raw.subscribe and a retained raw.publish return at once, an event and a read
+    Before connect() direct.subscribe and a retained direct.publish return at once, an event and a read
     of the broker raise BrokerDisconnectedError. Once the client connects, the handler gets what the broker
     keeps under its filter and the broker gets the retained message.
     """
-    await driver.raw.publish("/state/x", "1", retain=True)
+    await driver.direct.publish("/state/x", "1", retain=True)
     client = Client("test-service", broker.url())
     received: list[Message] = []
 
-    await wait_or_dump(client.raw.subscribe("/state/#", received.append), timeout=1)
-    await wait_or_dump(client.raw.publish("/kept/x", "2", retain=True), timeout=1)
+    await wait_or_dump(client.direct.subscribe("/state/#", received.append), timeout=1)
+    await wait_or_dump(client.direct.publish("/kept/x", "2", retain=True), timeout=1)
     with pytest.raises(BrokerDisconnectedError):
-        await wait_or_dump(client.raw.publish("/events/x", "1"), timeout=1)
+        await wait_or_dump(client.direct.publish("/events/x", "1"), timeout=1)
     with pytest.raises(BrokerDisconnectedError):
         await wait_or_dump(client.create_device("dev"), timeout=1)
     await wait_or_dump(client.connect(), timeout=5)
@@ -495,7 +499,7 @@ async def test_buffer_changed_after_publish_does_not_change_the_replay(
     broker: MosquittoBroker, dead_link: tuple[DeadLinkProxy, Client], offline: bool
 ) -> None:
     """
-    A retained raw message published from a bytearray goes out again after reconnect as it was published,
+    A retained direct message published from a bytearray goes out again after reconnect as it was published,
     also when the service changes the buffer later.
     """
     proxy, client = dead_link
@@ -503,7 +507,7 @@ async def test_buffer_changed_after_publish_does_not_change_the_replay(
         await proxy.drop(client)
     buffer = bytearray(b"first")
 
-    await client.raw.publish("/state/x", buffer, retain=True)
+    await client.direct.publish("/state/x", buffer, retain=True)
     buffer[:] = b"other"
 
     if offline:
@@ -518,7 +522,7 @@ async def test_retained_change_without_puback_in_time_goes_again_while_the_link_
     broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch, change: str
 ) -> None:
     """
-    The broker does not confirm a value, a meta or a raw retained message in time while the link lives.
+    The broker does not confirm a value, a meta or a direct retained message in time while the link lives.
     The call returns, and the change goes again over the same connection, without waiting for a reconnect.
     """
     call, changed, payload = RETAINED_CHANGES[change]
@@ -655,10 +659,10 @@ async def test_marker_confirmed_late_still_ends_a_read_of_the_broker(
     on a big delivery later than 5 s while the link lives. A read of the broker still returns
     what the broker keeps once the marker arrives.
     """
-    await driver.raw.publish("/state/x", "1", retain=True)
+    await driver.direct.publish("/state/x", "1", retain=True)
     intercept_publish(monkeypatch, confirm_markers_late)
 
-    assert await wait_or_dump(client.raw.read("/state/#"), timeout=5) == {"/state/x": b"1"}
+    assert await wait_or_dump(client.direct.read("/state/#"), timeout=5) == {"/state/x": b"1"}
 
 
 async def test_marker_refused_by_paho_ends_a_read_with_broker_disconnected(
@@ -678,7 +682,7 @@ async def test_marker_refused_by_paho_ends_a_read_with_broker_disconnected(
     intercept_publish(monkeypatch, refuse_markers)
 
     with pytest.raises(BrokerDisconnectedError):
-        await wait_or_dump(client.raw.read("/state/#"), timeout=5)
+        await wait_or_dump(client.direct.read("/state/#"), timeout=5)
 
 
 async def test_used_up_subscription_numbers_refuse_a_new_subscription_and_the_client_goes_on(
@@ -697,10 +701,10 @@ async def test_used_up_subscription_numbers_refuse_a_new_subscription_and_the_cl
     )
 
     with pytest.raises(RuntimeError):
-        await wait_or_dump(client.raw.subscribe("/a/#", print), timeout=5)
+        await wait_or_dump(client.direct.subscribe("/a/#", print), timeout=5)
     await proxy.drop(client)
     with pytest.raises(RuntimeError):
-        await wait_or_dump(client.raw.subscribe("/b/#", print), timeout=5)
+        await wait_or_dump(client.direct.subscribe("/b/#", print), timeout=5)
 
     await proxy.restore(client)
     assert client.is_connected
@@ -717,10 +721,12 @@ async def test_session_that_keeps_failing_after_connack_keeps_the_pause_growing(
     attempts: list[float] = []
     healed = asyncio.Event()
 
-    async def fail_after_connack(self: subscriber_module.Subscriber, connection: link.Connection) -> None:
+    async def fail_after_connack(
+        self: subscriber_module.Subscriber, connection: broker_connection.Connection
+    ) -> None:
         if not healed.is_set():
             attempts.append(time.monotonic())
-            raise link.LinkLost("the session breaks right after CONNACK")
+            raise broker_connection.LinkLost("the session breaks right after CONNACK")
         await restore(self, connection)
 
     monkeypatch.setattr(subscriber_module.Subscriber, "connection_restored", fail_after_connack)
@@ -742,9 +748,9 @@ async def test_acks_late_after_reconnect_do_not_drop_the_session(
     messages before them, on a big delivery later than 5 s. The session stays, the link is reported up,
     and the handler gets what the broker keeps again.
     """
-    await driver.raw.publish("/state/x", "1", retain=True)
+    await driver.direct.publish("/state/x", "1", retain=True)
     received: list[Message] = []
-    await client.raw.subscribe("/state/#", received.append)
+    await client.direct.subscribe("/state/#", received.append)
     await wait_until(lambda: len(received) == 1)
     changes: list[bool] = []
     client.on_connection_change(changes.append)
@@ -853,11 +859,11 @@ async def test_event_when_the_link_drops_fails_at_once_and_does_not_go_later(
     await device.create_control("temp", ControlType.VALUE, value=1)
     watcher = await connect("watcher")
     events: list[Message] = []
-    await watcher.raw.subscribe("/events/#", events.append)
+    await watcher.direct.subscribe("/events/#", events.append)
 
     proxy.dead = True
     removal = asyncio.ensure_future(device.remove()) if behind_an_erasure else None
-    event = asyncio.ensure_future(client.raw.publish("/events/x", "1"))
+    event = asyncio.ensure_future(client.direct.publish("/events/x", "1"))
     await asyncio.sleep(0.2)
     assert not event.done()
     proxy.cut()
@@ -908,9 +914,11 @@ async def test_session_that_fails_unexpectedly_is_started_again(
     """
     await (await client.create_device("dev")).create_control("temp", ControlType.VALUE, value=21)
     restore = publisher_module.Publisher.connection_restored
-    broken: list[link.Connection] = []
+    broken: list[broker_connection.Connection] = []
 
-    def break_the_first_restore(self: publisher_module.Publisher, connection: link.Connection) -> None:
+    def break_the_first_restore(
+        self: publisher_module.Publisher, connection: broker_connection.Connection
+    ) -> None:
         if not broken:
             broken.append(connection)
             raise RuntimeError("a bug")

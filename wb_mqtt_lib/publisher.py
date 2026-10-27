@@ -13,7 +13,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from . import link, topics
+from . import broker_connection, topics
 from .errors import BrokerDisconnectedError, ClientClosedError
 from .tasks import retrieve_error
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class _MirrorEntry:
-    payload: link.Payload
+    payload: broker_connection.Payload
     qos: int
     # Stage of an erasure, a later stage goes out after the broker confirmed the earlier one
     stage: int = 0
@@ -62,7 +62,7 @@ class _Publication:  # pylint: disable=too-many-instance-attributes
     """
 
     topic: str
-    payload: link.Payload
+    payload: broker_connection.Payload
     qos: int
     retain: bool
     # The mirror entry a retained publication carries. One whose entry is no longer the current one
@@ -101,11 +101,11 @@ class _Session:  # pylint: disable=too-few-public-methods
     Publication over one broker connection. A new connection starts a new session with an empty queue.
     """
 
-    def __init__(self, connection: link.Connection) -> None:
+    def __init__(self, connection: broker_connection.Connection) -> None:
         self.connection = connection
         self.loop = asyncio.get_running_loop()
         self.queue: deque[Optional[_Publication]] = deque()
-        # Publications handed to the connection and waiting for PUBACK, at most link.SEND_WINDOW
+        # Publications handed to the connection and waiting for PUBACK, at most broker_connection.SEND_WINDOW
         self.inflight = 0
         self.send_tasks: set[asyncio.Task] = set()
 
@@ -139,7 +139,7 @@ class Publisher:
         """
         self._closing = True
 
-    def connection_restored(self, connection: link.Connection) -> None:
+    def connection_restored(self, connection: broker_connection.Connection) -> None:
         """
         Start a session over the new connection and queue the own retained state.
         """
@@ -177,7 +177,7 @@ class Publisher:
     async def publish(  # pylint: disable=too-many-arguments
         self,
         topic: str,
-        payload: link.Payload = None,
+        payload: broker_connection.Payload = None,
         qos: int = 1,
         retain: bool = False,
         *,
@@ -187,9 +187,9 @@ class Publisher:
         Publish a message and return once the broker confirmed it.
 
         A retained message is state, without a link it waits in the mirror and goes out after reconnect.
-        When the broker does not confirm it in link.ACK_TIMEOUT_S while the link lives, the call returns
-        as well and the message goes again in its place. A non-retained message is an event, without a link
-        it is an error. A cancelled call does not take the message back.
+        When the broker does not confirm it in broker_connection.ACK_TIMEOUT_S while the link lives, the call
+        returns as well and the message goes again in its place. A non-retained message is an event, without
+        a link it is an error. A cancelled call does not take the message back.
 
         Without wait_for_puback a retained message returns once the connection took it, a send task waits for
         PUBACK. A full window or a queue still holds the caller until the broker confirms, so a service cannot
@@ -199,14 +199,14 @@ class Publisher:
             ValueError: the topic or the QoS is invalid.
             TypeError: the payload is a bool or not str, bytes, bytearray, int, float or None.
             BrokerDisconnectedError: an event while the link is down, or the link is lost or the broker
-                does not confirm it in link.ACK_TIMEOUT_S.
+                does not confirm it in broker_connection.ACK_TIMEOUT_S.
             ClientClosedError: the client closes before the broker confirmed the message.
         """
         # Checks, and the payload in the form the mirror keeps
         if not isinstance(topic, topics.CheckedTopic):
             topics.check_topic(topic)
-        link.check_qos(qos)
-        link.check_payload(payload)
+        broker_connection.check_qos(qos)
+        broker_connection.check_payload(payload)
         if payload in ("", b""):
             # An empty payload erases a retained message, the mirror keeps erasures as None
             payload = None
@@ -225,7 +225,12 @@ class Publisher:
             raise BrokerDisconnectedError(f"broker is not connected, {topic} is not published")
 
         # Retained state with room in the window and an empty queue returns at once
-        if retain and not wait_for_puback and not session.queue and session.inflight < link.SEND_WINDOW:
+        if (
+            retain
+            and not wait_for_puback
+            and not session.queue
+            and session.inflight < broker_connection.SEND_WINDOW
+        ):
             # The send task starts at once, the packet reaches paho before the call returns
             session.queue.append(_Publication(topic, payload, qos, retain, mirror_entry))
             self._send_queued(session)
@@ -237,7 +242,7 @@ class Publisher:
         self._send_queued(session)
         await asyncio.shield(batch.future)
 
-    def queue_retained(self, messages: Sequence[tuple[str, link.Payload]]) -> asyncio.Future:
+    def queue_retained(self, messages: Sequence[tuple[str, broker_connection.Payload]]) -> asyncio.Future:
         """
         Put own retained messages into the mirror and the queue together, in the order given, QoS 1.
 
@@ -275,7 +280,9 @@ class Publisher:
             if mirror_entry.payload is not None and (own_topic == topic or own_topic.startswith(prefix))
         ]
 
-    def _put_in_mirror(self, topic: str, payload: link.Payload, qos: int, stage: int = 0) -> _MirrorEntry:
+    def _put_in_mirror(
+        self, topic: str, payload: broker_connection.Payload, qos: int, stage: int = 0
+    ) -> _MirrorEntry:
         current_entry = self._mirror.get(topic)
         if current_entry is None or current_entry.payload is None or payload is None:
             # Appearing again and erasing go to the end. The replay keeps the order the state was built in,
@@ -298,7 +305,7 @@ class Publisher:
     # Queue of the session and sending
     # ------------------------------------------------------------
 
-    def _queue_staged(self, staged: Sequence[tuple[str, link.Payload, int]]) -> asyncio.Future:
+    def _queue_staged(self, staged: Sequence[tuple[str, broker_connection.Payload, int]]) -> asyncio.Future:
         """
         Put retained messages into the mirror and the queue in the order given, QoS 1, with a barrier
         where the stage changes.
@@ -358,7 +365,7 @@ class Publisher:
                     continue
 
                 # A publication goes out while the window has room
-                if session.inflight >= link.SEND_WINDOW:
+                if session.inflight >= broker_connection.SEND_WINDOW:
                     return
                 queue.popleft()
                 session.inflight += 1
@@ -385,7 +392,7 @@ class Publisher:
                     await session.connection.publish(
                         publication.topic, publication.payload, publication.qos, publication.retain
                     )
-                except link.LinkError as error:
+                except broker_connection.LinkError as error:
                     # An event fails, after mark_closing state fails too
                     if not publication.retain or self._closing:
                         self._end_unconfirmed(publication, str(error))
@@ -394,7 +401,7 @@ class Publisher:
                     publication.finish()
                     # State waits for the replay, unless the broker was only late and the change is current
                     if (
-                        not isinstance(error, link.AckTimeout)
+                        not isinstance(error, broker_connection.AckTimeout)
                         or session is not self._session
                         or self._mirror.get(publication.topic) is not publication.mirror_entry
                     ):

@@ -224,7 +224,7 @@ async def test_every_listener_waits_for_a_control_that_does_not_exist_yet(
     await temp.update_meta(units="V")
     await temp.remove()
     await own_device.create_control("later", ControlType.SWITCH, value=False)
-    await driver.raw.publish("/devices/own/controls/later/on", "1")
+    await driver.direct.publish("/devices/own/controls/later/on", "1")
 
     await wait_until(lambda: events["removed"] and commands == [True])
     assert events == {
@@ -414,7 +414,7 @@ async def test_handler_with_the_wrong_arguments_is_refused_at_registration(
         with pytest.raises(TypeError):
             register(handler)
     with pytest.raises(TypeError):
-        await client.raw.subscribe("/x", lambda: None)
+        await client.direct.subscribe("/x", lambda: None)
 
     assert internals(client)["listeners"] == 0
     level.on_value(lambda *args: None)
@@ -476,11 +476,11 @@ async def test_device_without_meta_appears_and_goes_with_its_controls(driver: Cl
     remote.on_removed(lambda device: events.append("removed"))
     assert remote.exists and remote.driver is None and list(remote.controls) == ["a"]
 
-    await driver.raw.publish("/devices/legacy/controls/b/meta", '{"type": "text"}', retain=True)
-    await driver.raw.publish("/devices/legacy/controls/a/meta", "", retain=True)
+    await driver.direct.publish("/devices/legacy/controls/b/meta", '{"type": "text"}', retain=True)
+    await driver.direct.publish("/devices/legacy/controls/a/meta", "", retain=True)
     await wait_until(lambda: list(remote.controls) == ["b"])
     assert events == ["added"]
-    await driver.raw.publish("/devices/legacy/controls/b/meta", "", retain=True)
+    await driver.direct.publish("/devices/legacy/controls/b/meta", "", retain=True)
 
     await wait_until(lambda: events == ["added", "removed"])
 

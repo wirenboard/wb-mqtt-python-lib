@@ -122,9 +122,9 @@ async def test_error_comes_from_meta_error_topic_and_json_meta(driver: Client, c
     errors = []
     control.on_error(lambda c, error, previous: errors.append(error))
 
-    await driver.raw.publish(f"{base}/meta/error", "r", retain=True)
+    await driver.direct.publish(f"{base}/meta/error", "r", retain=True)
     await wait_until(lambda: errors[-1:] == [ControlErrorFlags.READ])
-    await driver.raw.publish(f"{base}/meta", json.dumps({"type": "value", "error": "w"}), retain=True)
+    await driver.direct.publish(f"{base}/meta", json.dumps({"type": "value", "error": "w"}), retain=True)
     await wait_until(lambda: errors[-1:] == [ControlErrorFlags.WRITE])
 
     assert control.error == ControlErrorFlags.WRITE
@@ -199,8 +199,8 @@ async def test_device_snapshot_reads_once_and_stays_as_read(driver: Client, clie
     await relay.set_error(ControlErrorFlags.READ)
     await device.create_control("button", ControlType.PUSHBUTTON)
     # A retained value on a pushbutton is a leftover, not a value
-    await driver.raw.publish("/devices/dev/controls/button", "1", retain=True)
-    await driver.raw.publish("/devices/dev/controls/no_meta", "5", retain=True)
+    await driver.direct.publish("/devices/dev/controls/button", "1", retain=True)
+    await driver.direct.publish("/devices/dev/controls/no_meta", "5", retain=True)
 
     snapshot = await client.get_device_snapshot("dev")
     await temp.set_value(30)
@@ -230,7 +230,7 @@ async def test_device_back_without_its_meta_has_no_old_title_or_driver(
     await wait_until(lambda: not remote.exists)
     other = await connect("other")
 
-    await other.raw.publish("/devices/X/controls/b/meta", '{"type": "value"}', retain=True)
+    await other.direct.publish("/devices/X/controls/b/meta", '{"type": "value"}', retain=True)
 
     await wait_until(lambda: remote.exists)
     snapshot = await client.get_device_snapshot("X")
@@ -250,7 +250,7 @@ async def test_device_meta_erased_while_its_controls_stay_is_a_meta_change(
     metas: list[tuple[TranslatedTitle, Any]] = []
     remote.on_meta(lambda changed: metas.append((changed.title, changed.driver)))
 
-    await driver.raw.publish("/devices/X/meta", "", retain=True)
+    await driver.direct.publish("/devices/X/meta", "", retain=True)
 
     await wait_until(lambda: metas == [(TranslatedTitle(), None)])
     assert remote.exists
@@ -275,17 +275,17 @@ async def test_foreign_pushbutton_presses_and_a_retained_leftover(
     await proxy.drop(client)
     await proxy.restore(client)
     # The end of a new read comes after the retained messages of the subscriptions made again
-    await client.raw.read("/devices/dev/controls/button")
+    await client.direct.read("/devices/dev/controls/button")
     await asyncio.sleep(0.2)
     assert not presses and button.value is None and button.exists
 
-    await driver.raw.publish("/devices/dev/controls/button", "1", retain=True)
-    await client.raw.read("/devices/dev/controls/button")
+    await driver.direct.publish("/devices/dev/controls/button", "1", retain=True)
+    await client.direct.read("/devices/dev/controls/button")
     await asyncio.sleep(0.2)
     assert not presses
 
     for _ in range(2):
-        await driver.raw.publish("/devices/dev/controls/button", "1")
+        await driver.direct.publish("/devices/dev/controls/button", "1")
 
     await wait_until(lambda: presses == [True, True])
 
@@ -330,7 +330,7 @@ async def test_operations_on_a_control_that_is_gone_raise_control_missing(
 
     await (await driver.create_device("dev")).create_control("level", ControlType.VALUE, value=1)
     user = await connect("user")
-    await user.raw.publish("/devices/dev/controls/level/on", "5")
+    await user.direct.publish("/devices/dev/controls/level/on", "5")
 
     await wait_until(lambda: commands == [5])
 
@@ -351,7 +351,7 @@ async def test_wait_ends_when_the_name_appears_or_at_the_timeout(
     if appearance == "device and control":
         await (await driver.create_device("late")).create_control("temp", ControlType.VALUE, value=1)
     elif appearance == "control meta only":
-        await driver.raw.publish("/devices/late/controls/temp/meta", '{"type": "value"}', retain=True)
+        await driver.direct.publish("/devices/late/controls/temp/meta", '{"type": "value"}', retain=True)
 
     results = await wait_or_dump(asyncio.gather(control_wait, device_wait, return_exceptions=True), timeout=3)
     if appearance == "never":
@@ -421,8 +421,8 @@ async def test_foreign_meta_numbers_out_of_range_are_dropped(connect: ConnectCli
     metas: list[str] = []
     level.on_meta(lambda control: metas.append(control.name))
 
-    await other.raw.publish("/devices/odd/controls/level/meta", meta, retain=True)
-    await other.raw.publish("/devices/odd/controls/level", "6", retain=True)
+    await other.direct.publish("/devices/odd/controls/level/meta", meta, retain=True)
+    await other.direct.publish("/devices/odd/controls/level", "6", retain=True)
     await wait_until(lambda: level.value == 6)
 
     assert (level.meta.precision, level.meta.minimum, level.meta.maximum) == (None, None, None)
@@ -443,7 +443,7 @@ async def test_nan_after_nan_is_no_change(driver: Client, client: Client) -> Non
     level.on_value(lambda control, value, previous: values.append(value))
 
     for payload in ("NaN", "NaN", "2"):
-        await driver.raw.publish("/devices/dev/controls/level", payload, retain=True)
+        await driver.direct.publish("/devices/dev/controls/level", payload, retain=True)
 
     await wait_until(lambda: len(values) >= 3 and values[-1] == 2)
     assert len(values) == 3 and values[0] == 1 and math.isnan(values[1])
@@ -567,8 +567,8 @@ async def test_payload_that_does_not_parse_comes_as_a_string(
     remote.on_value(lambda _control, value, _previous: values.append(value))
 
     for payload in (garbage, good):
-        await driver.raw.publish(base, payload, retain=True)
-        await client.raw.publish(f"{base}/on", payload)
+        await driver.direct.publish(base, payload, retain=True)
+        await client.direct.publish(f"{base}/on", payload)
 
     await wait_until(lambda: values == [garbage, expected] and commands == [garbage, expected])
 
@@ -608,7 +608,7 @@ async def test_new_type_of_a_foreign_control_reads_its_value_again_without_an_ev
 
     waiting = None if expected is None else asyncio.ensure_future(remote.wait_value(fits, timeout=5))
 
-    await driver.raw.publish(f"{base}/meta", json.dumps({"type": after}), retain=True)
+    await driver.direct.publish(f"{base}/meta", json.dumps({"type": after}), retain=True)
 
     await wait_until(lambda: metas == [after])
     assert remote.value == expected and type(remote.value) is type(expected)

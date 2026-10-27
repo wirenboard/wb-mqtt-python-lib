@@ -36,7 +36,7 @@ Debian trixie или контейнер `debian:trixie` с пакетами `mos
 | `test_deadlocks.py`       | обработчики, которые сами ждут брокер                            |
 | `test_multiple_clients.py`| несколько клиентов в одном процессе                              |
 | `test_leaks.py`           | утечки памяти, задач и подписок при долгой работе                |
-| `test_raw.py`             | `client.raw`                                                     |
+| `test_direct.py`          | `client.direct`                                                  |
 | `test_transports.py`      | транспорты, адрес брокера и логин                                |
 | `test_package.py`         | что внутри библиотеки только относительные импорты               |
 | `test_broker.py`          | сами помощники и детектор зависаний                              |

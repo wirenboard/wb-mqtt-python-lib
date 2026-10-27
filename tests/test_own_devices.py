@@ -38,12 +38,12 @@ from wb_mqtt_lib import (
     Message,
     NotOwnError,
     TranslatedTitle,
-    link,
+    broker_connection,
 )
 from wb_mqtt_lib import subscriber as subscriber_module
 
-# What remove() erases under a device with raw subtopics, in this order, and what stays in the broker
-RAW_SUBTOPIC_ERASURES = {
+# What remove() erases under a device with direct subtopics, in this order, and what stays in the broker
+DIRECT_SUBTOPIC_ERASURES = {
     "device": (
         [
             "/devices/dev/controls/temp",
@@ -82,7 +82,7 @@ async def watch_erasures(connect: ConnectClient, topic_filter: str) -> list[str]
         if not message.payload:
             erased.append(message.topic)
 
-    await (await connect("watcher")).raw.subscribe(topic_filter, on_message)
+    await (await connect("watcher")).direct.subscribe(topic_filter, on_message)
     return erased
 
 
@@ -239,7 +239,7 @@ async def test_value_is_published_on_change_and_pushbutton_every_time(client: Cl
     async def collect(message: Message) -> None:
         published.append(f"{message.topic.rsplit('/', 1)[1]}={message.payload.decode()}")
 
-    await client.raw.subscribe("/devices/test_dev/controls/+", collect)
+    await client.direct.subscribe("/devices/test_dev/controls/+", collect)
     for value in (1, 1, 2, 2):
         await level.set_value(value)
     for _ in range(2):
@@ -261,19 +261,19 @@ async def test_retained_command_is_erased_and_live_command_reaches_handler(
     """
     other = await connect("other")
     if sent == "before the device":
-        await other.raw.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
+        await other.direct.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
     device = await client.create_device("test_dev")
     relay = await device.create_control("relay", ControlType.SWITCH, value=False)
     commands = []
     relay.on_command(lambda control, value: commands.append(value))
     if sent == "while the device listens":
-        await other.raw.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
+        await other.direct.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
 
     await wait_retained(broker.port, "/devices/test_dev/controls/relay/on", {})
     assert not commands
 
-    await other.raw.publish("/devices/test_dev/controls/relay/on", "")
-    await other.raw.publish("/devices/test_dev/controls/relay/on", "2")
+    await other.direct.publish("/devices/test_dev/controls/relay/on", "")
+    await other.direct.publish("/devices/test_dev/controls/relay/on", "2")
     await wait_until(lambda: commands == [True])
 
 
@@ -288,7 +288,7 @@ async def test_command_to_an_own_pushbutton_comes_as_true(connect: ConnectClient
     device.on_control_command(lambda _control, value: commands.append(("device", value)))
     user = await connect("user")
 
-    await user.raw.publish("/devices/dev/controls/button/on", "1")
+    await user.direct.publish("/devices/dev/controls/button/on", "1")
 
     await wait_until(lambda: len(commands) == 2)
     assert sorted(commands) == [("control", True), ("device", True)]
@@ -429,7 +429,7 @@ async def test_create_device_returns_the_device_when_the_link_drops_at_its_comma
     commands: list[bool] = []
     relay.on_command(lambda _control, value: commands.append(value))
     user = await connect("user")
-    await user.raw.publish("/devices/dev/controls/relay/on", "1")
+    await user.direct.publish("/devices/dev/controls/relay/on", "1")
     await wait_until(lambda: commands == [True])
 
 
@@ -532,7 +532,7 @@ async def test_own_listeners_survive_removal_and_creation_again(
     device = await client.create_device("dev")
     await device.create_control("relay", ControlType.SWITCH, value=True)
     user = await connect("user")
-    await user.raw.publish("/devices/dev/controls/relay/on", "0")
+    await user.direct.publish("/devices/dev/controls/relay/on", "0")
 
     await wait_until(lambda: events["command"] == [False])
     assert events["added"] == [relay, relay] and events["removed"] == [relay]
@@ -648,7 +648,7 @@ async def test_device_error_is_set_cleared_and_erased_before_the_device_meta(
     device.on_error(lambda _device, error, previous: events.append((error, previous)))
     watcher = await connect("watcher")
     seen: list[tuple[str, bytes]] = []
-    await watcher.raw.subscribe(
+    await watcher.direct.subscribe(
         "/devices/dev/#", lambda message: seen.append((message.topic, message.payload))
     )
 
@@ -769,7 +769,7 @@ async def test_device_created_again_while_its_removal_goes_out_gets_commands(
 
     await wait_or_dump(asyncio.gather(device.remove(), create_again()), timeout=5)
     user = await connect("user")
-    await user.raw.publish("/devices/dev/controls/relay/on", "1")
+    await user.direct.publish("/devices/dev/controls/relay/on", "1")
 
     await wait_until(lambda: commands == [True])
     assert delayed and internals(client)["subscriptions"] == 1
@@ -817,7 +817,7 @@ async def test_changes_reach_the_broker_in_the_order_of_the_calls(
     def collect(message: Message) -> None:
         seen.append(f"{message.topic.rsplit('/', 1)[1]}={message.payload.decode()}")
 
-    await watcher.raw.subscribe("/devices/dev/controls/+", collect)
+    await watcher.direct.subscribe("/devices/dev/controls/+", collect)
     await wait_until(lambda: seen == ["level=0"])
     seen.clear()
 
@@ -837,7 +837,7 @@ async def test_changes_reach_the_broker_in_the_order_of_the_calls(
 
 
 @pytest.mark.parametrize("offline", [False, True], ids=["online", "offline"])
-@pytest.mark.parametrize("removed", RAW_SUBTOPIC_ERASURES)
+@pytest.mark.parametrize("removed", DIRECT_SUBTOPIC_ERASURES)
 async def test_remove_erases_what_the_service_published_under_it(
     broker: MosquittoBroker,
     connect: ConnectClient,
@@ -847,16 +847,16 @@ async def test_remove_erases_what_the_service_published_under_it(
 ) -> None:
     """
     remove() of a device or a control erases also the legacy meta subtopics the service published itself
-    with raw.publish, without a link after reconnect. A subtopic goes before the meta it belongs to, one
+    with direct.publish, without a link after reconnect. A subtopic goes before the meta it belongs to, one
     of a control with the values, one of the device with the control meta, /meta/driver with the device meta.
     """
-    erased, remaining = RAW_SUBTOPIC_ERASURES[removed]
+    erased, remaining = DIRECT_SUBTOPIC_ERASURES[removed]
     proxy, client = dead_link
     device = await client.create_device("dev")
     temp = await device.create_control("temp", ControlType.VALUE, value=1)
-    await client.raw.publish("/devices/dev/meta/name", "Dev", retain=True)
-    await client.raw.publish("/devices/dev/meta/driver", "test-service", retain=True)
-    await client.raw.publish("/devices/dev/controls/temp/meta/type", "value", retain=True)
+    await client.direct.publish("/devices/dev/meta/name", "Dev", retain=True)
+    await client.direct.publish("/devices/dev/meta/driver", "test-service", retain=True)
+    await client.direct.publish("/devices/dev/controls/temp/meta/type", "value", retain=True)
     seen = await watch_erasures(connect, "/devices/dev/#")
     if offline:
         await proxy.drop(client)
@@ -889,13 +889,13 @@ async def test_device_handler_gets_commands_of_all_controls_in_order(
     device.on_control_command(on_command)
     user = await connect("user")
     for name, payload in [("K1", "1"), ("K2", "1"), ("K1", "0"), ("K2", "0")]:
-        await user.raw.publish(f"/devices/dev/controls/{name}/on", payload)
+        await user.direct.publish(f"/devices/dev/controls/{name}/on", payload)
     await wait_until(lambda: len(commands) == 4)
     first.remove_handler(on_command)
-    await user.raw.publish("/devices/dev/controls/K1/on", "1")
+    await user.direct.publish("/devices/dev/controls/K1/on", "1")
     await wait_until(lambda: len(commands) == 5)
     device.remove_handler(on_command)
-    await user.raw.publish("/devices/dev/controls/K2/on", "1")
+    await user.direct.publish("/devices/dev/controls/K2/on", "1")
 
     await asyncio.sleep(0.2)
     assert commands == [("K1", True), ("K2", True), ("K1", False), ("K2", False), ("K1", True)]
@@ -930,7 +930,7 @@ async def test_own_change_returns_before_puback_while_the_window_has_room(
     await wait_or_dump(controls[0].set_error(ControlErrorFlags.READ), timeout=1)
     await wait_or_dump(device.set_error(ControlErrorFlags.WRITE), timeout=1)
     # The command, the meta and two errors hold four places of the window, values fill the rest
-    for control in controls[1 : link.SEND_WINDOW - 3]:
+    for control in controls[1 : broker_connection.SEND_WINDOW - 3]:
         await wait_or_dump(control.set_value(1), timeout=1)
     held = asyncio.ensure_future(controls[-1].set_value(1))
     await asyncio.sleep(0.2)
@@ -938,7 +938,7 @@ async def test_own_change_returns_before_puback_while_the_window_has_room(
 
     release.set()
     await wait_or_dump(asyncio.gather(command, meta, held), timeout=5)
-    last = f"/devices/dev/controls/c{link.SEND_WINDOW - 1}"
+    last = f"/devices/dev/controls/c{broker_connection.SEND_WINDOW - 1}"
     await wait_retained(broker.port, last, {last: b"1"})
 
 

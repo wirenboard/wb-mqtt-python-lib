@@ -133,7 +133,9 @@ async def test_command_to_a_deprecated_number_type_is_a_checked_number(
     """
     await publish_retained(driver, {"/devices/dev/controls/t/meta": '{"type": "temperature"}'})
     commands: list[bytes] = []
-    await driver.raw.subscribe("/devices/dev/controls/t/on", lambda message: commands.append(message.payload))
+    await driver.direct.subscribe(
+        "/devices/dev/controls/t/on", lambda message: commands.append(message.payload)
+    )
     remote = await client.get_control("dev/t")
 
     for value in ("abc", True, float("nan")):
@@ -217,7 +219,7 @@ async def test_error_flags_go_out_as_letters_and_come_back(
         ("x", ControlErrorFlags.NONE),
         ("w", ControlErrorFlags.WRITE),
     ]:
-        await driver.raw.publish("/devices/dev/controls/temp/meta/error", letters, retain=True)
+        await driver.direct.publish("/devices/dev/controls/temp/meta/error", letters, retain=True)
         await wait_until(lambda expected=flags: remote.error == expected)
 
 
@@ -363,12 +365,12 @@ async def test_value_with_precision_changes_locally_also_when_its_payload_stays(
         else:
             barriers.append(message.payload)
 
-    await watcher.raw.subscribe(value_topic, observe)
-    await watcher.raw.subscribe(barrier_topic, observe)
+    await watcher.direct.subscribe(value_topic, observe)
+    await watcher.direct.subscribe(barrier_topic, observe)
     await wait_until(lambda: payloads == [b"21.5"])
 
     async def settle(token: bytes) -> None:
-        await client.raw.publish(barrier_topic, token)
+        await client.direct.publish(barrier_topic, token)
         await wait_until(lambda: barriers[-1:] == [token])
 
     await level.set_value(21.53)

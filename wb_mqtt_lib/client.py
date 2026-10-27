@@ -8,10 +8,11 @@ import logging
 import uuid
 from typing import Any, Coroutine, Optional
 
-from . import link
+from . import broker_connection
 from .broker_url import DEFAULT_BROKER_URL, parse_broker_url
 from .device_sync import DeviceSync
 from .devices import Control, Device
+from .direct_topics import DirectTopics
 from .errors import ClientClosedError, LoginRejectedError
 from .listeners import (
     ConnectionHandler,
@@ -21,7 +22,6 @@ from .listeners import (
     check_handler_arguments,
 )
 from .publisher import Publisher
-from .raw import RawTopics
 from .state import State
 from .subscriber import Subscriber
 from .tasks import TaskSet
@@ -70,7 +70,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             driver, self._subscriber, self._publisher, state, is_closed=self._is_closed
         )
         self._service_tasks = TaskSet(logger)
-        self.raw = RawTopics(
+        self.direct = DirectTopics(
             self._subscriber, self._publisher, self._listener_registry, is_closed=self._is_closed
         )
 
@@ -350,7 +350,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         while not self._stop_requested.is_set():
             reported_connected = False
             try:
-                async with link.Connection(self._address, self._client_id) as connection:
+                async with broker_connection.Connection(self._address, self._client_id) as connection:
                     connected_once = True
                     await self._subscriber.connection_restored(connection)
                     self._publisher.connection_restored(connection)
@@ -364,8 +364,8 @@ class Client:  # pylint: disable=too-many-instance-attributes
                     logger.info("Connected to the MQTT broker")
                     await self._read_until_stop(connection)
                     return
-            except link.LinkError as error:
-                if isinstance(error, link.LoginRejected) and not connected_once:
+            except broker_connection.LinkError as error:
+                if isinstance(error, broker_connection.LoginRejected) and not connected_once:
                     self._fatal_error = LoginRejectedError(str(error))
                     logger.error("MQTT login rejected: %s", error)
                     return
@@ -393,7 +393,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 await asyncio.wait_for(self._stop_requested.wait(), delay)
             delay = min(delay * 2, RECONNECT_MAX_DELAY_S)
 
-    async def _read_until_stop(self, connection: link.Connection) -> None:
+    async def _read_until_stop(self, connection: broker_connection.Connection) -> None:
         """
         Hand incoming messages to the subscriber. Return on close, raise LinkLost when the link drops.
         """
@@ -409,7 +409,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         finally:
             for task in (reader, closing):
                 task.cancel()
-                with contextlib.suppress(asyncio.CancelledError, link.LinkError):
+                with contextlib.suppress(asyncio.CancelledError, broker_connection.LinkError):
                     await task
 
     def _request_stop(self) -> None:

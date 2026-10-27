@@ -259,8 +259,9 @@ class Control:  # pylint: disable=too-many-public-methods
 
     async def remove(self) -> None:
         """
-        Only for an own control. Erase everything the client published under the control, raw legacy
-        subtopics too. Listeners stay and see the control again if it is created again.
+        Only for an own control. Erase everything the client published under the control, legacy
+        subtopics published through client.direct too. Listeners stay and see the control again if it is
+        created again.
 
         Nothing happens when the control does not exist, for example after remove() of its device.
 
@@ -520,8 +521,8 @@ class Device:  # pylint: disable=too-many-public-methods
 
     async def remove(self) -> None:
         """
-        Only for an own device. Erase everything the client published under the device, raw legacy
-        subtopics too. A second call does nothing.
+        Only for an own device. Erase everything the client published under the device, legacy
+        subtopics published through client.direct too. A second call does nothing.
 
         The erasure goes in three stages, each after the broker confirmed the one before: the values,
         errors and legacy meta subtopics of the controls, then their meta, the error of the device and its

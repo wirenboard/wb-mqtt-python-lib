@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import aiomqtt
 
-from wb_mqtt_lib import ControlType, link
+from wb_mqtt_lib import ControlType, broker_connection
 
 HOST = "127.0.0.1"
 MOSQUITTO = shutil.which("mosquitto") or "/usr/sbin/mosquitto"
@@ -41,7 +41,7 @@ BROKER_READS: dict[str, Callable[[Any], Awaitable[Any]]] = {
     "get_device_names": lambda client: client.get_device_names(),
     "get_device_snapshot": lambda client: client.get_device_snapshot("dev"),
     "remove_driver_devices": lambda client: client.remove_driver_devices(),
-    "raw.read": lambda client: client.raw.read("/x/#"),
+    "direct.read": lambda client: client.direct.read("/x/#"),
 }
 
 
@@ -436,7 +436,7 @@ async def window_of_controls(client: Any) -> list[Any]:
     device = await client.create_device("dev")
     return [
         await device.create_control(f"c{index}", ControlType.VALUE, value=0)
-        for index in range(link.SEND_WINDOW)
+        for index in range(broker_connection.SEND_WINDOW)
     ]
 
 
@@ -445,7 +445,7 @@ async def publish_retained(client: Any, retained: dict[str, str]) -> None:
     Publish retained messages through a client in the order given, as a driver leaves them in the broker.
     """
     for topic, payload in retained.items():
-        await client.raw.publish(topic, payload, retain=True)
+        await client.direct.publish(topic, payload, retain=True)
 
 
 async def read_retained(port: int, topic_filter: str, timeout: float = 5.0) -> dict[str, bytes]:
