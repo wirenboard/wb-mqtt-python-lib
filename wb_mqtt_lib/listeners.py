@@ -9,7 +9,7 @@ import logging
 import weakref
 from typing import Any, Awaitable, Callable, Iterable, Optional, Union
 
-from .tasks import cancelled_from_outside, log_failure
+from .tasks import is_cancelled_from_outside, log_failure
 
 logger = logging.getLogger(__name__)
 
@@ -134,7 +134,7 @@ class Listener:
                 log_failure(logger, self._get_failure_label(args), error)
             except asyncio.CancelledError as error:
                 # A CancelledError of a task the handler awaited is a failure of the handler, not a stop
-                if cancelled_from_outside():
+                if is_cancelled_from_outside():
                     raise
                 log_failure(logger, self._get_failure_label(args), error)
             # The queue caught up, the next backlog goes to the log again

@@ -505,7 +505,7 @@ async def test_own_pushbutton_press_is_an_event_only_when_it_went_out(
     await button.set_value(True)
     await wait_until(lambda: len(presses) == 2)
     await asyncio.to_thread(broker.stop)
-    await wait_until(lambda: not client.connected)
+    await wait_until(lambda: not client.is_connected)
     with pytest.raises(BrokerDisconnectedError):
         await button.set_value(True)
     await asyncio.sleep(0.2)

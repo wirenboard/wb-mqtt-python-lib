@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 from urllib.parse import unquote, urlparse
 
-from .topics import broker_refuses
+from .topics import is_refused_by_broker
 
 DEFAULT_BROKER_URL = "unix:///var/run/mosquitto/mosquitto.sock"
 
@@ -73,7 +73,7 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
     # would retry forever. A password is binary data in MQTT, any character goes.
     username = unquote(parsed.username) if parsed.username else None
     password = unquote(parsed.password) if parsed.password else None
-    if username is not None and any(broker_refuses(char) for char in username):
+    if username is not None and any(is_refused_by_broker(char) for char in username):
         raise ValueError(f"{_INVALID_URL}, the login has a character the broker refuses")
 
     # A unix socket path, or a host with a port

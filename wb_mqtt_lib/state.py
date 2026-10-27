@@ -87,7 +87,7 @@ class ControlRecord:  # pylint: disable=too-many-instance-attributes,too-few-pub
         return self.meta is not None
 
     @property
-    def unused(self) -> bool:
+    def is_unused(self) -> bool:
         """
         True when the record holds nothing, neither meta, value, error, listeners nor waits.
         """
@@ -384,7 +384,7 @@ class State:  # pylint: disable=too-many-public-methods
         self._emit_control_event(device_name, control_name, "removed")
 
         # The record stays only for listeners and waits, the device may go with the control
-        if control.unused:
+        if control.is_unused:
             del device.controls[control_name]
         self._announce_device_change(device_name, state_before)
 
@@ -394,7 +394,7 @@ class State:  # pylint: disable=too-many-public-methods
         """
         device = self._devices.get(device_name)
         control = device.controls.get(control_name) if device else None
-        if control is not None and control.unused:
+        if control is not None and control.is_unused:
             del device.controls[control_name]
 
     def set_control_value(self, device_name: str, control_name: str, value: Any) -> None:

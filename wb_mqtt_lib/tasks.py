@@ -12,7 +12,7 @@ from .errors import BrokerDisconnectedError, ControlMissingError
 _EXPECTED_FAILURES = (BrokerDisconnectedError, ControlMissingError)
 
 
-def cancelled_from_outside() -> bool:
+def is_cancelled_from_outside() -> bool:
     """
     Whether the current task was cancelled, not just handed a CancelledError by something it awaited.
     """

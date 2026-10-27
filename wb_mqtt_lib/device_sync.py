@@ -23,7 +23,7 @@ from .listeners import Handler, ListenerRegistry
 from .publisher import Publisher
 from .state import ControlRecord, DeviceRecord, Ownership, State
 from .subscriber import Message, Subscriber
-from .tasks import TaskSet, cancelled_from_outside, retrieve_error
+from .tasks import TaskSet, is_cancelled_from_outside, retrieve_error
 from .values import (
     ControlErrorFlags,
     ControlMeta,
@@ -617,7 +617,7 @@ class DeviceSync:  # pylint: disable=too-many-public-methods
             await asyncio.shield(pending)
         except asyncio.CancelledError:
             # The internal task the caller waits for was cancelled by close(), not the caller itself
-            if pending.done() and self._is_closed() and not cancelled_from_outside():
+            if pending.done() and self._is_closed() and not is_cancelled_from_outside():
                 raise ClientClosedError("the client is closed") from None
             raise
 

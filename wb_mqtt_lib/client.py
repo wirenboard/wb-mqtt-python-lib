@@ -94,14 +94,14 @@ class Client:  # pylint: disable=too-many-instance-attributes
         await self.close()
 
     @property
-    def connected(self) -> bool:
+    def is_connected(self) -> bool:
         """
         True while the broker link is up.
 
         It may drop right after the check, so a command is not guarded by it. A command without a link raises
         BrokerDisconnectedError, catch that instead.
         """
-        return self._subscriber.connected
+        return self._subscriber.is_connected
 
     async def connect(self) -> None:
         """

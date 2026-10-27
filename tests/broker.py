@@ -399,7 +399,7 @@ async def restart_broker(broker: MosquittoBroker, *clients: Any) -> None:
     Restart the broker and wait until the clients are connected again.
     """
     await asyncio.to_thread(broker.restart)
-    await wait_until(lambda: all(client.connected for client in clients), timeout=10)
+    await wait_until(lambda: all(client.is_connected for client in clients), timeout=10)
 
 
 async def wait_retained(
@@ -501,14 +501,14 @@ class DeadLinkProxy:
         """
         self.dead = True
         self.cut()
-        await wait_until(lambda: not client.connected)
+        await wait_until(lambda: not client.is_connected)
 
     async def restore(self, client: Any) -> None:
         """
         Bring the link back and wait until the client is connected again.
         """
         self.dead = False
-        await wait_until(lambda: client.connected, timeout=20)
+        await wait_until(lambda: client.is_connected, timeout=20)
 
     async def close(self) -> None:
         self.cut()

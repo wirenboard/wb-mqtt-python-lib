@@ -94,7 +94,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         self._lock = asyncio.Lock()
 
     @property
-    def connected(self) -> bool:
+    def is_connected(self) -> bool:
         return self._connected
 
     @property

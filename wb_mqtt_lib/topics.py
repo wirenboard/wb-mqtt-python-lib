@@ -85,14 +85,14 @@ def _check_topic_text(topic: str) -> None:
         raise ValueError(f"topic {topic!r} is not valid UTF-8") from None
     if len(encoded) > _MAX_TOPIC_BYTES:
         raise ValueError(f"topic is longer than {_MAX_TOPIC_BYTES} bytes")
-    refused = sorted({char for char in topic if broker_refuses(char)})
+    refused = sorted({char for char in topic if is_refused_by_broker(char)})
     if refused:
         raise ValueError(f"topic {topic!r} contains characters the broker refuses {refused}")
     if topic.count("/") > MAX_SLASHES:
         raise ValueError(f"topic has more than {MAX_SLASHES} slashes")
 
 
-def broker_refuses(char: str) -> bool:
+def is_refused_by_broker(char: str) -> bool:
     """
     Whether mosquitto drops the connection on a topic or a login with this character.
 

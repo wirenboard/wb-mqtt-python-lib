@@ -54,7 +54,7 @@ async def test_close_from_a_command_handler(connect: ConnectClient, client: Clie
 
     async def on_stop(_control: Control, _value: Any) -> None:
         await client.close()
-        closed.set_result(client.connected)
+        closed.set_result(client.is_connected)
 
     stop.on_command(on_stop)
     user = await connect("user")
@@ -74,7 +74,7 @@ async def test_close_from_a_background_task_and_from_outside_at_once(client: Cli
     await wait_or_dump(asyncio.gather(inside, client.close()), timeout=5)
 
     assert (
-        not client.connected
+        not client.is_connected
         and internals(client)["service tasks"] == 0
         and internals(client)["listeners"] == 0
     )
@@ -118,7 +118,7 @@ async def test_close_cancels_tasks_and_handlers_that_wait_for_the_broker(
 
     assert waiting.cancelled() and looping.cancelled() and not caught
     assert internals(client)["listeners"] == 0 and internals(client)["service tasks"] == 0
-    assert not client.connected
+    assert not client.is_connected
     with pytest.raises(ClientClosedError):
         await wait_or_dump(outside, timeout=2)
 
@@ -205,7 +205,7 @@ async def test_second_client_with_the_same_driver_is_refused(connect: ConnectCli
         await first.connect()
 
     await first.close()
-    assert (await connect("wb-mqtt-test")).connected
+    assert (await connect("wb-mqtt-test")).is_connected
 
 
 async def test_async_with_connects_and_closes(broker: MosquittoBroker) -> None:
@@ -213,10 +213,10 @@ async def test_async_with_connects_and_closes(broker: MosquittoBroker) -> None:
     async with connects the client and closes it on the way out. The devices stay in the broker.
     """
     async with Client("test-service", broker.url()) as client:
-        assert client.connected
+        assert client.is_connected
         await (await client.create_device("dev")).create_control("temp", ControlType.VALUE, value=21)
 
-    assert not client.connected
+    assert not client.is_connected
     with pytest.raises(ClientClosedError):
         await client.create_device("other")
     await wait_retained(
@@ -336,7 +336,7 @@ async def test_connect_right_after_a_cancelled_one_waits_until_its_attempt_ends(
         await wait_or_dump(client.connect(), timeout=10)
 
         loops = [task for task in asyncio.all_tasks() if task.get_name().startswith("mqtt sessions")]
-        assert client.connected and len(loops) == 1
+        assert client.is_connected and len(loops) == 1
     finally:
         await wait_or_dump(client.close(), timeout=10)
         await proxy.close()
@@ -409,7 +409,7 @@ async def test_close_cancelled_midway_is_finished_by_the_next_close(broker: Mosq
 
     await wait_or_dump(client.close(), timeout=5)
 
-    assert not client.connected
+    assert not client.is_connected
     second = Client("test-service", broker.url())
     await wait_or_dump(second.connect(), timeout=5)
     await wait_or_dump(second.close(), timeout=5)
@@ -441,7 +441,7 @@ async def test_close_inside_a_task_that_close_cancels_does_not_wait_for_itself(
 
     await wait_or_dump(client.close(), timeout=5)
 
-    assert not client.connected
+    assert not client.is_connected
 
 
 @pytest.mark.parametrize("call", ["remove", "create_device", "update_meta", "create_control", "raw.publish"])

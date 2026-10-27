@@ -113,7 +113,7 @@ async def test_offline_own_state_goes_out_after_reconnect_and_events_fail(
     relay = await client.get_control("relays/K1")
 
     await asyncio.to_thread(broker.stop)
-    await wait_until(lambda: not client.connected)
+    await wait_until(lambda: not client.is_connected)
     await wait_or_dump(temp.set_value(2), timeout=1)
     await wait_or_dump(temp.set_value(3), timeout=1)
     humidity = await wait_or_dump(device.create_control("humidity", ControlType.VALUE, value=40), timeout=1)
@@ -123,7 +123,7 @@ async def test_offline_own_state_goes_out_after_reconnect_and_events_fail(
         await wait_or_dump(client.raw.publish("/events/x", "1"), timeout=1)
     await asyncio.to_thread(broker.start)
 
-    await wait_until(lambda: client.connected, timeout=10)
+    await wait_until(lambda: client.is_connected, timeout=10)
     await wait_retained(broker.port, "/devices/dev/controls/temp", {"/devices/dev/controls/temp": b"3"})
     humidity_meta = b'{"type": "value", "readonly": false, "hidden": false, "order": 2}'
     await wait_retained(
@@ -207,8 +207,8 @@ async def test_command_reported_as_failed_is_not_delivered_after_reconnect(
         await wait_or_dump(remote.set_value(True), timeout=10)
     proxy.dead = False
     proxy.cut()
-    await wait_until(lambda: not client.connected, timeout=5)
-    await wait_until(lambda: client.connected, timeout=10)
+    await wait_until(lambda: not client.is_connected, timeout=5)
+    await wait_until(lambda: client.is_connected, timeout=10)
     await asyncio.sleep(1)
     assert not commands
 
@@ -227,14 +227,14 @@ async def test_broker_reads_without_a_link_raise_and_work_after_reconnect(
     """
     before = internals(client)
     await asyncio.to_thread(broker.stop)
-    await wait_until(lambda: not client.connected)
+    await wait_until(lambda: not client.is_connected)
 
     with pytest.raises(BrokerDisconnectedError):
         await wait_or_dump(BROKER_READS[call](client), timeout=5)
 
     assert internals(client) == before
     await asyncio.to_thread(broker.start)
-    await wait_until(lambda: client.connected, timeout=10)
+    await wait_until(lambda: client.is_connected, timeout=10)
     await wait_or_dump(BROKER_READS[call](client), timeout=5)
 
 
@@ -253,7 +253,7 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
     before = internals(client)
     if offline:
         await asyncio.to_thread(broker.stop)
-        await wait_until(lambda: not client.connected)
+        await wait_until(lambda: not client.is_connected)
     received: list[Message] = []
     refused = [
         (client.raw.publish("a/+/b", "x", retain=True), ValueError),
@@ -304,7 +304,7 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
 
     assert internals(client) == before
     await asyncio.to_thread(broker.start if offline else broker.restart)
-    await wait_until(lambda: client.connected, timeout=10)
+    await wait_until(lambda: client.is_connected, timeout=10)
     await wait_retained(broker.port, "/devices/dev/#", OWN_DEVICE)
     await client.raw.subscribe("zigbee2mqtt/#", received.append)
     await client.raw.publish("zigbee2mqtt/bridge/state", "online")
@@ -703,7 +703,7 @@ async def test_used_up_subscription_numbers_refuse_a_new_subscription_and_the_cl
         await wait_or_dump(client.raw.subscribe("/b/#", print), timeout=5)
 
     await proxy.restore(client)
-    assert client.connected
+    assert client.is_connected
 
 
 async def test_session_that_keeps_failing_after_connack_keeps_the_pause_growing(
@@ -731,7 +731,7 @@ async def test_session_that_keeps_failing_after_connack_keeps_the_pause_growing(
     # The pause doubles from 1 s, so the fourth attempt comes 7 s after the first
     assert len(attempts) <= 3
     healed.set()
-    await wait_until(lambda: client.connected, timeout=15)
+    await wait_until(lambda: client.is_connected, timeout=15)
 
 
 async def test_acks_late_after_reconnect_do_not_drop_the_session(
@@ -763,7 +763,7 @@ async def test_acks_late_after_reconnect_do_not_drop_the_session(
 
     await wait_until(lambda: changes == [False, True], timeout=15)
     await wait_until(lambda: len(received) == 2, timeout=10)
-    assert received[1].topic == "/state/x" and client.connected
+    assert received[1].topic == "/state/x" and client.is_connected
 
 
 async def test_more_publications_than_paho_takes_at_once_go_out_whole_and_in_order(
@@ -920,4 +920,4 @@ async def test_session_that_fails_unexpectedly_is_started_again(
     await asyncio.to_thread(broker.restart)
 
     await wait_retained(broker.port, "/devices/dev/#", OWN_DEVICE, timeout=20)
-    assert broken and client.connected
+    assert broken and client.is_connected

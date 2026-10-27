@@ -13,7 +13,7 @@ from enum import Flag, StrEnum, auto
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Union
 
-from .topics import broker_refuses
+from .topics import is_refused_by_broker
 
 # ------------------------------------------------------------
 # Control types
@@ -92,7 +92,7 @@ def check_name(name: str, entity: str) -> None:
     """
     if not isinstance(name, str) or not name:
         raise ValueError(f"{entity} name must be a non-empty string")
-    forbidden = {char for char in name if char in _FORBIDDEN_NAME_CHARS or broker_refuses(char)}
+    forbidden = {char for char in name if char in _FORBIDDEN_NAME_CHARS or is_refused_by_broker(char)}
     if forbidden:
         raise ValueError(f"{entity} name {name!r} contains forbidden characters {sorted(forbidden)}")
 

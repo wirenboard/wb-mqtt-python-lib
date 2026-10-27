@@ -146,7 +146,7 @@ async def test_valid_login_connects(login_broker: MosquittoBroker, transport: st
 
     await wait_or_dump(client.connect(), timeout=5)
 
-    assert client.connected
+    assert client.is_connected
     await wait_or_dump(client.close(), timeout=5)
 
 
@@ -162,7 +162,7 @@ async def test_rejected_login_raises_instead_of_reconnecting(
     with pytest.raises(LoginRejectedError):
         await wait_or_dump(client.connect(), timeout=5)
 
-    assert not client.connected
+    assert not client.is_connected
     await wait_or_dump(client.close(), timeout=5)
 
 
@@ -181,13 +181,13 @@ async def test_login_rejected_after_a_reconnect_is_retried(login_broker: Mosquit
 
         login_broker.set_password("service", "changed")
         await asyncio.to_thread(login_broker.restart)
-        await wait_until(lambda: not client.connected)
+        await wait_until(lambda: not client.is_connected)
         await asyncio.sleep(2)
-        assert not client.connected
+        assert not client.is_connected
         login_broker.set_password("service", "secret")
         await asyncio.to_thread(login_broker.restart)
 
-        await wait_until(lambda: client.connected, timeout=20)
+        await wait_until(lambda: client.is_connected, timeout=20)
         await wait_or_dump(reader.connect(), timeout=5)
         temp = await reader.get_control("dev/temp", timeout=5)
         await wait_until(lambda: temp.value == 21)

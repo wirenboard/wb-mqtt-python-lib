@@ -513,7 +513,7 @@ async def test_subscription_that_fails_after_its_caller_gave_up_is_tried_again(
         return False
 
     await wait_until(handler_refused, timeout=15)
-    await wait_until(lambda: client.connected, timeout=10)
+    await wait_until(lambda: client.is_connected, timeout=10)
     device = await wait_or_dump(client.get_device("dev"), timeout=5)
     assert device.exists and device.controls["temp"].value == 1
 
