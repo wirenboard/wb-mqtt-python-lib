@@ -29,7 +29,9 @@ from wb_mqtt_lib import (
     ControlType,
     Device,
     InvalidNameError,
+    Message,
     NotOwnError,
+    ReadonlyControlError,
     TranslatedTitle,
 )
 
@@ -87,11 +89,9 @@ async def test_command_to_foreign_control_goes_to_on_and_value_follows_driver(
     driver: Client, client: Client
 ) -> None:
     """
-    set_value of a foreign control is a command, readonly too, the value changes when the driver publishes it.
+    set_value of a foreign control is a command, the value changes when the driver publishes it.
     """
-    relay = await (await driver.create_device("relays")).create_control(
-        "K1", ControlType.SWITCH, value=False, readonly=True
-    )
+    relay = await (await driver.create_device("relays")).create_control("K1", ControlType.SWITCH, value=False)
     received, release = asyncio.Event(), asyncio.Event()
 
     async def apply(control: Control, value: Any) -> None:
@@ -111,6 +111,29 @@ async def test_command_to_foreign_control_goes_to_on_and_value_follows_driver(
     release.set()
 
     assert await wait_or_dump(remote.wait_value(True, timeout=5), timeout=6) is True
+
+
+async def test_command_to_foreign_readonly_control_is_refused_until_readonly_is_off(
+    driver: Client, client: Client
+) -> None:
+    """
+    A readonly control has no /on by the convention. set_value raises and sends nothing, as wb-rules refuses
+    such a write. Once the driver takes readonly off, the command goes out.
+    """
+    relay = await (await driver.create_device("relays")).create_control(
+        "K1", ControlType.SWITCH, value=False, readonly=True
+    )
+    sent: list[Message] = []
+    await driver.raw.subscribe("/devices/relays/controls/K1/on", sent.append)
+    remote = await client.get_control("relays/K1")
+
+    with pytest.raises(ReadonlyControlError):
+        await remote.set_value(True)
+    await relay.update_meta(readonly=False)
+    await wait_until(lambda: not remote.readonly)
+    await remote.set_value(True)
+
+    await wait_until(lambda: [message.payload for message in sent] == [b"1"])
 
 
 async def test_error_comes_from_meta_error_topic_and_json_meta(driver: Client, client: Client) -> None:

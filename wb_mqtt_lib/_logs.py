@@ -4,10 +4,11 @@ Loggers of the library modules and how failures of service code are logged.
 
 import logging
 
-from ._errors import BrokerDisconnectedError, ControlMissingError
+from ._errors import BrokerDisconnectedError, ControlMissingError, ReadonlyControlError
 
-# Normal operation while the broker or a driver restarts, not a bug in the service
-_EXPECTED_FAILURES = (BrokerDisconnectedError, ControlMissingError)
+# Normal operation while the broker or a driver restarts, or when a driver makes a control readonly.
+# Not a bug in the service
+_EXPECTED_FAILURES = (BrokerDisconnectedError, ControlMissingError, ReadonlyControlError)
 
 
 def get_logger(module_name: str) -> logging.Logger:
@@ -23,8 +24,8 @@ def log_failure(logger: logging.Logger, description: str, error: BaseException) 
     """
     Log an exception that service code raised in a handler or a background task.
 
-    A lost broker link or a control that is gone during a driver restart is one WARNING line,
-    anything else is an ERROR with the traceback.
+    A lost broker link, a control that is gone during a driver restart or a command to a readonly control
+    is one WARNING line, anything else is an ERROR with the traceback.
     """
     if isinstance(error, _EXPECTED_FAILURES):
         logger.warning("%s failed: %s", description, error)

@@ -18,6 +18,7 @@ from .._errors import (
     DeviceTakenError,
     InvalidNameError,
     NotOwnError,
+    ReadonlyControlError,
 )
 from .._listeners import Handler, ListenerRegistry
 from .._logs import get_logger
@@ -314,8 +315,10 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         self._raise_if_closed()
         control = self._require_existing_control(device_name, control_name)
 
-        # Foreign control, a command to /on
+        # Foreign control, a command to /on. A readonly one has no /on by the convention
         if not self.state.is_own_device(device_name):
+            if control.meta.readonly:
+                raise ReadonlyControlError(f"{device_name}/{control_name} is readonly and takes no commands")
             payload, _ = to_payload_and_value(control.meta, value)
             await self._publisher.publish(topics.control_command(device_name, control_name), payload, qos=1)
             return
@@ -487,13 +490,16 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
                 self._erase([message.topic])
             return
 
-        # Skipped without a control, a payload or a handler
+        # Skipped without a control, a payload or a handler, or for a readonly control
         control = self.state.get_control(topic.device, topic.control)
         payload = message.payload.decode("utf-8", "replace")
         if control is None or not control.exists:
             logger.debug("Command to %s/%s skipped, the control does not exist", topic.device, topic.control)
             return
         if not payload:
+            return
+        if control.meta.readonly:
+            logger.debug("Command to %s/%s skipped, the control is readonly", topic.device, topic.control)
             return
         if not self.state.has_command_listeners(topic.device, topic.control):
             logger.debug("Command to %s/%s has no command handler", topic.device, topic.control)

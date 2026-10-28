@@ -437,6 +437,31 @@ async def test_create_device_returns_the_device_when_the_link_drops_at_its_comma
     await wait_until(lambda: commands == [True])
 
 
+async def test_command_to_readonly_control_reaches_no_handler_until_readonly_is_off(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    A readonly control has no /on by the convention. Like wb-rules, the client drops a command to it, for the
+    control handler and the device handler alike. Once readonly is off, commands come again.
+    """
+    device = await client.create_device("dev")
+    relay = await device.create_control("relay", ControlType.SWITCH, value=False, readonly=True)
+    commands: list[str] = []
+    relay.on_command(lambda _control, value: commands.append(f"control {value}"))
+    device.on_control_command(lambda _control, value: commands.append(f"device {value}"))
+    # The raw handler gets the command after the client has already passed it on or dropped it
+    seen: list[Message] = []
+    await client.raw.subscribe("/devices/dev/controls/relay/on", seen.append)
+    user = await connect("user")
+
+    await user.raw.publish("/devices/dev/controls/relay/on", "1")
+    await wait_until(lambda: len(seen) == 1)
+    await relay.update_meta(readonly=False)
+    await user.raw.publish("/devices/dev/controls/relay/on", "0")
+
+    await wait_until(lambda: sorted(commands) == ["control False", "device False"])
+
+
 async def test_device_and_control_exist_once(client: Client) -> None:
     """
     A second create of the same name is an AlreadyCreatedError, also two creates of one device at once.

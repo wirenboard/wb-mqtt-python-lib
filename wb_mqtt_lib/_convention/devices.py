@@ -170,6 +170,7 @@ class Control:  # pylint: disable=too-many-public-methods
 
         The handler may be added before the control exists, after remove() it waits until the service
         creates the control again. It decides what to publish, a command without a handler is dropped.
+        A readonly control takes no commands, they come again once readonly is off.
 
         Raises:
             NotOwnError: the control is foreign.
@@ -222,6 +223,7 @@ class Control:  # pylint: disable=too-many-public-methods
         Raises:
             TypeError: the value does not fit the control type.
             ControlMissingError: the control does not exist.
+            ReadonlyControlError: the control is foreign and readonly, nothing goes to /on.
             BrokerDisconnectedError: a command or a pushbutton press while the broker link is down,
                 or the link is lost or the broker does not confirm it in 5 s.
             ClientClosedError: the client is closed or closes while waiting.
@@ -415,7 +417,7 @@ class Device:  # pylint: disable=too-many-public-methods
 
         The commands of all controls share one queue, so they reach the handler in the order they came.
         A removed device keeps the handler until the service creates it again. control.remove_handler does
-        not take it off, device.remove_handler does.
+        not take it off, device.remove_handler does. Commands to readonly controls are dropped.
 
         Raises:
             NotOwnError: the device is foreign.

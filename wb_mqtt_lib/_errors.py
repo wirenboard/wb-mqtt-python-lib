@@ -24,6 +24,12 @@ class NotOwnError(MqttLibError):
     """
 
 
+class ReadonlyControlError(MqttLibError):
+    """
+    A command to a foreign readonly control. By the convention such a control has no /on.
+    """
+
+
 class ControlMissingError(MqttLibError):
     """
     The control is not published right now, for example while its driver restarts, or an action

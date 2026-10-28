@@ -22,6 +22,7 @@ from ._errors import (
     LoginRejectedError,
     MqttLibError,
     NotOwnError,
+    ReadonlyControlError,
 )
 from ._mqtt.broker_url import DEFAULT_BROKER_URL
 from ._mqtt.subscriber import Message
@@ -46,5 +47,6 @@ __all__ = [
     "Message",
     "MqttLibError",
     "NotOwnError",
+    "ReadonlyControlError",
     "TranslatedTitle",
 ]
