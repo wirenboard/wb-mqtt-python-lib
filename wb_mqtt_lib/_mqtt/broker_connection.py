@@ -1,7 +1,7 @@
 """
 The broker connection over aiomqtt and paho. Everything the library needs from them goes through here.
 
-The publication queue and the subscriptions rely on three properties of aiomqtt 2.3.1 over paho 2.1.0:
+The publication queue and the subscriptions rely on three properties of aiomqtt over paho:
 
 1. Order. publish, subscribe and unsubscribe hand the packet to paho before their first await. Packets go
    to the broker in the order of the calls, also when the caller awaits the answer later in its own task.
