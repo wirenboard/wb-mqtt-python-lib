@@ -593,41 +593,6 @@ async def add(connection: Connection) -> None:
 - Сама библиотека значение контрола по команде не меняет, его записывает обработчик через `set_value`.
 - Сообщение в `/on` с флагом retain библиотека не исполняет и стирает из брокера.
 
-### Обработчик, который пишет в контрол
-
-`on_value` срабатывает на каждое изменение значения, в том числе когда значение записал сам обработчик. Для своего контрола событие приходит сразу после `set_value`, для чужого после того, как драйвер выполнит команду. Если обработчик `on_value` каждый раз записывает в тот же контрол новое значение, он снова и снова вызывает сам себя и засыпает брокер публикациями. Так же зацикливаются два обработчика, которые пишут в контролы друг друга.
-
-```python
-relay = await device.create_control(
-    "relay", control_type=ControlType.SWITCH, value=False
-)
-
-
-# Неверно. Каждая запись меняет значение и снова вызывает обработчик
-async def toggle_back(control: Control, value: Any, previous: Any) -> None:
-    await control.set_value(not value)
-
-
-relay.on_value(toggle_back)
-```
-
-Если записать в контрол то же значение, что в нём уже есть, события не будет. Поэтому обработчик должен писать в контрол, только когда значение нужно изменить.
-
-```python
-setpoint = await device.create_control(
-    "setpoint", control_type=ControlType.RANGE, value=20, maximum=50, minimum=0
-)
-
-
-# Верно. Записанное 30 придёт в обработчик ещё раз, и он ничего не запишет
-async def limit(control: Control, value: Any, previous: Any) -> None:
-    if value > 30:
-        await control.set_value(30)
-
-
-setpoint.on_value(limit)
-```
-
 ### Снятие обработчика
 
 | Вызов                                                               | Что делает                                                                                                                                  |
