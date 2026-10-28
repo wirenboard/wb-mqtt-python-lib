@@ -52,14 +52,6 @@ class Control:  # pylint: disable=too-many-public-methods
     def __hash__(self) -> int:
         return hash(self.full_name)
 
-    def _listen(self, event: str, handler: Any) -> Any:
-        self._device_manager.add_control_listener(self.device.name, self.name, event, handler)
-        return handler
-
-    @property
-    def _record(self) -> Optional[ControlRecord]:
-        return self._device_manager.state.get_control(self.device.name, self.name)
-
     @property
     def full_name(self) -> str:
         """
@@ -249,6 +241,14 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         await self._device_manager.remove_control(self.device.name, self.name)
 
+    def _listen(self, event: str, handler: Any) -> Any:
+        self._device_manager.add_control_listener(self.device.name, self.name, event, handler)
+        return handler
+
+    @property
+    def _record(self) -> Optional[ControlRecord]:
+        return self._device_manager.state.get_control(self.device.name, self.name)
+
 
 class Device:  # pylint: disable=too-many-public-methods
     """
@@ -279,14 +279,6 @@ class Device:  # pylint: disable=too-many-public-methods
 
     def __hash__(self) -> int:
         return hash(self.name)
-
-    def _listen(self, event: str, handler: Any) -> Any:
-        self._device_manager.add_device_listener(self.name, event, handler)
-        return handler
-
-    @property
-    def _record(self) -> Optional[DeviceRecord]:
-        return self._device_manager.state.get_device(self.name)
 
     @property
     def exists(self) -> bool:
@@ -513,3 +505,11 @@ class Device:  # pylint: disable=too-many-public-methods
             ClientClosedError: the client is closed or closes while waiting.
         """
         await self._device_manager.remove_device(self.name)
+
+    def _listen(self, event: str, handler: Any) -> Any:
+        self._device_manager.add_device_listener(self.name, event, handler)
+        return handler
+
+    @property
+    def _record(self) -> Optional[DeviceRecord]:
+        return self._device_manager.state.get_device(self.name)

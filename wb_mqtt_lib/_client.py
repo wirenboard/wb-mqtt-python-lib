@@ -87,6 +87,10 @@ class Client:  # pylint: disable=too-many-instance-attributes
         self._closed = False
         self._close_task: Optional[asyncio.Task] = None
 
+    # ------------------------------------------------------------
+    # Connection
+    # ------------------------------------------------------------
+
     async def __aenter__(self) -> "Client":
         await self.connect()
         return self
@@ -173,29 +177,6 @@ class Client:  # pylint: disable=too-many-instance-attributes
             return
         await asyncio.shield(self._close_task)
 
-    async def _close(self, caller: Optional[asyncio.Task]) -> None:
-        # Handlers and tasks of the client end by cancellation, not by an error of the wait they are in.
-        # A loop that catches Exception around a wait would otherwise spin and never let close go on.
-        self._subscriber.mark_closing()
-        self._publisher.mark_closing()
-        await self._listener_registry.stop_all(spare=caller)
-        await self._service_tasks.cancel_all_tasks(spare=caller)
-        self._subscriber.fail_waits()
-        await self._device_manager.close()
-        await self._stop_sessions()
-
-    def start_task(self, coroutine: Coroutine[Any, Any, Any], name: Optional[str] = None) -> asyncio.Task:
-        """
-        Run work in the background. The client keeps the task, logs its error and cancels it on close.
-
-        Raises:
-            ClientClosedError: the client is closed.
-        """
-        if self._closed:
-            coroutine.close()
-            raise ClientClosedError("the client is closed")
-        return self._service_tasks.start_task(coroutine, name or getattr(coroutine, "__qualname__", "task"))
-
     def on_connection_change(self, handler: ConnectionHandler) -> ConnectionHandler:
         """
         handler(connected) on every change of the broker link after the registration.
@@ -221,6 +202,26 @@ class Client:  # pylint: disable=too-many-instance-attributes
         unless remove_handler is called from that handler itself.
         """
         self._connection_listeners.remove_handler(handler)
+
+    # ------------------------------------------------------------
+    # Background tasks
+    # ------------------------------------------------------------
+
+    def start_task(self, coroutine: Coroutine[Any, Any, Any], name: Optional[str] = None) -> asyncio.Task:
+        """
+        Run work in the background. The client keeps the task, logs its error and cancels it on close.
+
+        Raises:
+            ClientClosedError: the client is closed.
+        """
+        if self._closed:
+            coroutine.close()
+            raise ClientClosedError("the client is closed")
+        return self._service_tasks.start_task(coroutine, name or getattr(coroutine, "__qualname__", "task"))
+
+    # ------------------------------------------------------------
+    # Devices
+    # ------------------------------------------------------------
 
     async def create_device(self, name: str, title: TitleLike = None, force: bool = False) -> Device:
         """
@@ -329,18 +330,9 @@ class Client:  # pylint: disable=too-many-instance-attributes
         """
         return await self._device_manager.remove_driver_devices()
 
-    def _raise_if_closed(self) -> None:
-        if self._closed:
-            raise ClientClosedError("the client is closed")
-
-    def _is_closed(self) -> bool:
-        return self._closed
-
-    def _make_control(self, device_name: str, control_name: str) -> Control:
-        return Control(self._make_device(device_name), control_name, self._device_manager)
-
-    def _make_device(self, device_name: str) -> Device:
-        return Device(device_name, self._device_manager)
+    # ------------------------------------------------------------
+    # Sessions with the broker
+    # ------------------------------------------------------------
 
     async def _run_sessions(self) -> None:
         delay = RECONNECT_MIN_DELAY_S
@@ -414,6 +406,17 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 with contextlib.suppress(asyncio.CancelledError, broker_connection.LinkError):
                     await task
 
+    async def _close(self, caller: Optional[asyncio.Task]) -> None:
+        # Handlers and tasks of the client end by cancellation, not by an error of the wait they are in.
+        # A loop that catches Exception around a wait would otherwise spin and never let close go on.
+        self._subscriber.mark_closing()
+        self._publisher.mark_closing()
+        await self._listener_registry.stop_all(spare=caller)
+        await self._service_tasks.cancel_all_tasks(spare=caller)
+        self._subscriber.fail_waits()
+        await self._device_manager.close()
+        await self._stop_sessions()
+
     def _request_stop(self) -> None:
         """
         Free the driver name at once and tell the sessions to stop. A connection attempt that has begun ends
@@ -431,3 +434,20 @@ class Client:  # pylint: disable=too-many-instance-attributes
         if self._holds_driver:
             _DRIVERS_IN_USE.discard(self.driver)
             self._holds_driver = False
+
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
+
+    def _raise_if_closed(self) -> None:
+        if self._closed:
+            raise ClientClosedError("the client is closed")
+
+    def _is_closed(self) -> bool:
+        return self._closed
+
+    def _make_control(self, device_name: str, control_name: str) -> Control:
+        return Control(self._make_device(device_name), control_name, self._device_manager)
+
+    def _make_device(self, device_name: str) -> Device:
+        return Device(device_name, self._device_manager)

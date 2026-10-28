@@ -108,10 +108,6 @@ class RawTopics:
         # A cancelled call still takes the stopped listener off every filter
         await asyncio.shield(self._unsubscribe_filters(listener, filters))
 
-    async def _unsubscribe_filters(self, listener: Listener, filters: list[str]) -> None:
-        for topic_filter in filters:
-            await self._subscriber.unsubscribe(topic_filter, listener.queue_message)
-
     async def read(self, topic_filter: str) -> dict[str, bytes]:
         """
         Read what lies in the broker under the filter now. A filter some handler listens to is answered
@@ -146,6 +142,10 @@ class RawTopics:
         """
         self._raise_if_closed()
         await self._publisher.publish(topic, payload, qos=qos, retain=retain)
+
+    async def _unsubscribe_filters(self, listener: Listener, filters: list[str]) -> None:
+        for topic_filter in filters:
+            await self._subscriber.unsubscribe(topic_filter, listener.queue_message)
 
     def _stop_listener(self, handler: Handler) -> tuple[Listener, list[str]]:
         listener, filters = self._handlers.pop(handler)

@@ -115,21 +115,6 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             self._device_watches[name] = device_watch
         await self._wait_for_broker(device_watch)
 
-    def _forget_failed_device_watch(self, name: str, device_watch: asyncio.Task) -> None:
-        # The next call subscribes again, also when every caller of this one was cancelled meanwhile
-        failed = not device_watch.cancelled() and device_watch.exception() is not None
-        if failed and self._device_watches.get(name) is device_watch:
-            del self._device_watches[name]
-
-    async def _subscribe_device(self, name: str) -> None:
-        try:
-            await self._subscriber.subscribe(topics.watch_filters(name), self._on_device_message)
-        except BaseException:
-            # Undo the subscription, the next call subscribes again
-            for topic_filter in topics.watch_filters(name):
-                await self._subscriber.unsubscribe(topic_filter, self._on_device_message)
-            raise
-
     async def wait_device_exists(self, name: str, timeout: float) -> None:
         self._raise_if_closed()
         await self.state.wait_device_exists(name, timeout)
@@ -193,35 +178,6 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             log_error=False,
         )
         await self._wait_for_broker(created)
-
-    async def _take_over_name(
-        self,
-        name: str,
-        title: TranslatedTitle,
-        device_topics: topics.DeviceTopics,
-        leftovers: dict[str, bytes],
-    ) -> None:
-        """
-        Erase the leftovers under the name and publish the own device in their place.
-
-        Once the name is checked, the device becomes own also without a link. Its erasures and meta wait
-        in the mirror in their order and go out after reconnect, like any own change.
-        """
-        # Leftovers are erased before the own device takes the name
-        if leftovers:
-            await self._erase_leftovers(leftovers)
-
-        # The name becomes own unless another create_device took it meanwhile
-        device = self.state.ensure_device(name)
-        _check_not_created(name, device)
-        self.state.make_device_own(name, title, self._driver)
-        device.topics = device_topics
-
-        # The meta goes out, the commands get subscribed, waits for the device end
-        published = self._publisher.queue_retained([(device.topics.meta, self._get_device_meta_json(device))])
-        subscribed = self._tasks.start_task(self._subscribe_commands(name), f"subscribe commands of {name}")
-        self.state.wake_device_waits(name)
-        await asyncio.gather(published, subscribed)
 
     async def update_device_meta(self, name: str, title: TitleLike) -> None:
         device = self._require_own_device(name)
@@ -509,6 +465,50 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
     # ------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------
+
+    def _forget_failed_device_watch(self, name: str, device_watch: asyncio.Task) -> None:
+        # The next call subscribes again, also when every caller of this one was cancelled meanwhile
+        failed = not device_watch.cancelled() and device_watch.exception() is not None
+        if failed and self._device_watches.get(name) is device_watch:
+            del self._device_watches[name]
+
+    async def _subscribe_device(self, name: str) -> None:
+        try:
+            await self._subscriber.subscribe(topics.watch_filters(name), self._on_device_message)
+        except BaseException:
+            # Undo the subscription, the next call subscribes again
+            for topic_filter in topics.watch_filters(name):
+                await self._subscriber.unsubscribe(topic_filter, self._on_device_message)
+            raise
+
+    async def _take_over_name(
+        self,
+        name: str,
+        title: TranslatedTitle,
+        device_topics: topics.DeviceTopics,
+        leftovers: dict[str, bytes],
+    ) -> None:
+        """
+        Erase the leftovers under the name and publish the own device in their place.
+
+        Once the name is checked, the device becomes own also without a link. Its erasures and meta wait
+        in the mirror in their order and go out after reconnect, like any own change.
+        """
+        # Leftovers are erased before the own device takes the name
+        if leftovers:
+            await self._erase_leftovers(leftovers)
+
+        # The name becomes own unless another create_device took it meanwhile
+        device = self.state.ensure_device(name)
+        _check_not_created(name, device)
+        self.state.make_device_own(name, title, self._driver)
+        device.topics = device_topics
+
+        # The meta goes out, the commands get subscribed, waits for the device end
+        published = self._publisher.queue_retained([(device.topics.meta, self._get_device_meta_json(device))])
+        subscribed = self._tasks.start_task(self._subscribe_commands(name), f"subscribe commands of {name}")
+        self.state.wake_device_waits(name)
+        await asyncio.gather(published, subscribed)
 
     def _require_own_device(self, name: str) -> DeviceRecord:
         """
