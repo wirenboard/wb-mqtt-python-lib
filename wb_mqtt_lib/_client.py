@@ -447,7 +447,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         return self._closed
 
     def _make_control(self, device_name: str, control_name: str) -> Control:
-        return Control(self._make_device(device_name), control_name, self._device_manager)
+        return Control(device_name, control_name, self._device_manager)
 
     def _make_device(self, device_name: str) -> Device:
         return Device(device_name, self._device_manager)

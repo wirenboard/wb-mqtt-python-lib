@@ -25,14 +25,7 @@ from tests.broker import (
     wait_until,
 )
 from tests.conftest import ConnectClient
-from wb_mqtt_lib import (
-    Client,
-    Control,
-    ControlErrorFlags,
-    ControlType,
-    Device,
-    DeviceTakenError,
-)
+from wb_mqtt_lib import Client, ControlErrorFlags, ControlType, DeviceTakenError
 
 # What another driver may keep under a name the service wants
 NAME_HOLDERS = pytest.mark.parametrize(
@@ -82,10 +75,6 @@ async def test_objects_of_one_control_are_equal_and_see_one_state(driver: Client
     assert first == second == argument and len({first, second, argument}) == 1
     assert first.value == second.value == argument.value == 5
     assert temp != first and temp.device != first.device
-    with pytest.raises(TypeError):
-        Device("dev")
-    with pytest.raises(TypeError):
-        Control(first.device, "temp")
 
 
 @pytest.mark.parametrize("new_owner", ["driver", "service"])

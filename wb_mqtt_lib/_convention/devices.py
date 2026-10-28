@@ -19,7 +19,6 @@ from .device_manager import DeviceManager
 from .state import ControlRecord, DeviceRecord
 from .values import ControlErrorFlags, ControlMeta, ControlType, DeviceMeta, TitleLike
 
-_BUILT_BY_THE_CLIENT = "the objects come from the client, for example from client.get_control"
 # Meta of a control or a device that does not exist, every field empty
 _EMPTY_CONTROL_META = ControlMeta()
 _EMPTY_DEVICE_META = DeviceMeta()
@@ -31,15 +30,10 @@ class Control:  # pylint: disable=too-many-public-methods
 
     The class is for type annotations. Objects come from Client.get_control, Device.controls
     and Device.create_control and as the first argument of a handler, only the client builds them.
-
-    Raises:
-        TypeError: the service calls the constructor itself.
     """
 
-    def __init__(self, device: "Device", name: str, device_manager: Optional[DeviceManager] = None) -> None:
-        if device_manager is None:
-            raise TypeError(_BUILT_BY_THE_CLIENT)
-        self.device = device
+    def __init__(self, device_name: str, name: str, device_manager: DeviceManager) -> None:
+        self.device = Device(device_name, device_manager)
         self.name = name
         self._device_manager = device_manager
 
@@ -256,14 +250,9 @@ class Device:  # pylint: disable=too-many-public-methods
 
     The class is for type annotations. Objects come from Client.create_device and Client.get_device
     and as an argument of a handler, only the client builds them.
-
-    Raises:
-        TypeError: the service calls the constructor itself.
     """
 
-    def __init__(self, name: str, device_manager: Optional[DeviceManager] = None) -> None:
-        if device_manager is None:
-            raise TypeError(_BUILT_BY_THE_CLIENT)
+    def __init__(self, name: str, device_manager: DeviceManager) -> None:
         self.name = name
         self._device_manager = device_manager
 
@@ -314,7 +303,7 @@ class Device:  # pylint: disable=too-many-public-methods
         Controls that exist now, by name.
         """
         return {
-            name: Control(self, name, self._device_manager)
+            name: Control(self.name, name, self._device_manager)
             for name in self._device_manager.state.existing_control_names(self.name)
         }
 
@@ -462,7 +451,7 @@ class Device:  # pylint: disable=too-many-public-methods
             hidden=hidden,
             enum=enum,
         )
-        return Control(self, name, self._device_manager)
+        return Control(self.name, name, self._device_manager)
 
     async def set_error(self, error: ControlErrorFlags) -> None:
         """
