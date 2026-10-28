@@ -337,11 +337,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             return
 
         # Own control of another type, the payload goes out only when it changed
-        if value is None:
-            # Clears the value, the broker drops the retained message
-            payload, normalized_value = None, None
-        else:
-            payload, normalized_value = to_payload_and_value(control.meta, value)
+        payload, normalized_value = to_payload_and_value(control.meta, value)
         changed = payload != control.payload
         control.payload = payload
         self.state.set_control_value(device_name, control_name, normalized_value)

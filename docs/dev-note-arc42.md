@@ -403,8 +403,7 @@ device.create_control("ctl", ...)
   → строка не изменилась, публикация пропускается
   → иначе Publisher.publish(retain=True, wait_for_puback=False), QoS 1, вызывающий не ждёт PUBACK,
     тело в зеркало и в очередь сессии, без связи только в зеркало
-  → None стирает значение пустым retained, события нет, у wb-rules стирание в whenChanged тоже не приходит
-  → "" в text тоже уходит пустым retained, MQTT не хранит пустое retained-сообщение. У своего контрола
+  → "" в text уходит пустым retained, MQTT не хранит пустое retained-сообщение. У своего контрола
     value остаётся "", у читателей становится None
   → set_error своего устройства публикуется так же, update_meta ждёт PUBACK
 

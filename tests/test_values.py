@@ -11,7 +11,6 @@ from tests.broker import (
     MosquittoBroker,
     publish_retained,
     read_retained,
-    restart_broker,
     wait_retained,
     wait_until,
 )
@@ -48,7 +47,6 @@ FORMATTED = [
     (ControlType.SWITCH, None, False, b"0"),
     (ControlType.ALARM, None, True, b"1"),
     (ControlType.RGB, None, [255, 0, 10], b"255;0;10"),
-    (ControlType.TEXT, None, 42, b"42"),
     (ControlType.TEXT, None, "hello", b"hello"),
     (ControlType.LOCAL_TIME, None, 1700000000, b"1700000000"),
     (ControlType.W1_ID, None, 2**63, b"9223372036854775808"),
@@ -77,6 +75,7 @@ REFUSED = [
     (ControlType.LOCAL_TIME, 1.5),
     (ControlType.W1_ID, True),
     (ControlType.TEXT, "a\udcff"),
+    (ControlType.TEXT, 42),
 ]
 
 
@@ -103,7 +102,7 @@ async def test_value_goes_out_formatted_by_type(broker: MosquittoBroker, client:
         elif control_type == ControlType.RGB:
             assert controls[index].value == tuple(value)
         elif control_type == ControlType.TEXT:
-            assert controls[index].value == str(value)
+            assert controls[index].value == value
 
 
 async def test_value_of_another_type_is_refused_before_publication(
@@ -278,28 +277,25 @@ async def test_enum_of_the_meta_is_read_only(broker: MosquittoBroker, client: Cl
 
 
 @pytest.mark.parametrize("control_type", [ControlType.VALUE, ControlType.SWITCH, ControlType.TEXT])
-async def test_none_clears_the_own_value(
+async def test_none_is_refused_and_the_value_stays(
     broker: MosquittoBroker, client: Client, control_type: ControlType
 ) -> None:
     """
-    set_value(None) erases the retained value, the value becomes None without an event, and the value
-    does not come back after reconnect. A value set again goes out as usual.
+    None is not a value of any type. set_value(None) raises TypeError, the value stays in the object
+    and in the broker.
     """
-    initial = {ControlType.VALUE: 5, ControlType.SWITCH: True, ControlType.TEXT: "on"}[control_type]
+    initial, payload = {
+        ControlType.VALUE: (5, b"5"),
+        ControlType.SWITCH: (True, b"1"),
+        ControlType.TEXT: ("on", b"on"),
+    }[control_type]
     control = await (await client.create_device("dev")).create_control("c", control_type, value=initial)
-    events: list = []
-    control.on_value(lambda _control, value, previous: events.append(value))
-    await wait_until(lambda: events == [initial])
 
-    await control.set_value(None)
+    with pytest.raises(TypeError):
+        await control.set_value(None)
 
-    assert control.value is None
-    await wait_retained(broker.port, "/devices/dev/controls/c", {})
-    await restart_broker(broker, client)
-    meta = f'{{"type": "{control_type}", "readonly": false, "hidden": false, "order": 1}}'.encode()
-    await wait_retained(broker.port, "/devices/dev/controls/c/#", {"/devices/dev/controls/c/meta": meta})
-    await control.set_value(initial)
-    await wait_until(lambda: events == [initial, initial])
+    assert control.value == initial
+    await wait_retained(broker.port, "/devices/dev/controls/c", {"/devices/dev/controls/c": payload})
 
 
 async def test_empty_text_erases_the_retained_value_and_stays_empty_locally(

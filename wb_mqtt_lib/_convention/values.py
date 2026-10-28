@@ -432,7 +432,7 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
     switch, alarm and wo-switch take bool, pushbutton takes True. value, range and the deprecated number types
     of foreign controls, temperature for example, take a finite number, precision rounds only the string.
     local_time and w1-id take an int. rgb takes three ints from 0 to 255 and keeps them as a tuple. text
-    takes anything but None whose str() is valid in UTF-8 and keeps the str.
+    and an unknown type of a foreign control take a str valid in UTF-8.
 
     Raises:
         TypeError: the value does not fit the control type.
@@ -469,12 +469,9 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
         return ";".join(str(part) for part in normalized), normalized
 
     # text and every other type
-    if value is None:
-        raise TypeError(f"{control_type} control takes a value, got None")
-    text = str(value)
-    if not is_utf8_text(text):
-        raise TypeError(f"{control_type} control takes text valid in UTF-8, got {text!r}")
-    return text, text
+    if not is_utf8_text(value):
+        raise TypeError(f"{control_type} control takes a str valid in UTF-8, got {value!r}")
+    return value, value
 
 
 def parse_value(meta: ControlMeta, payload: str) -> Any:
