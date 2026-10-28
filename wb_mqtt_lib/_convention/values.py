@@ -219,10 +219,11 @@ _ERROR_LETTERS = (
 @dataclass(frozen=True)
 class ControlMeta:  # pylint: disable=too-many-instance-attributes
     """
-    Everything the JSON meta of a control carries.
+    Everything the JSON meta of a control carries. A control without meta has an empty one,
+    with control_type None.
     """
 
-    control_type: str
+    control_type: Optional[str] = None
     title: TranslatedTitle = field(default_factory=TranslatedTitle)
     units: Optional[str] = None
     precision: Optional[float] = None
@@ -398,8 +399,11 @@ def parse_device_meta(payload: str) -> Optional[DeviceMeta]:
 class ControlSnapshot:
     """
     A control as the broker kept it at the moment of the read. It does not change afterwards.
+
+    The fields are those of Control.
     """
 
+    name: str
     meta: ControlMeta
     value: Any = None
     error: ControlErrorFlags = ControlErrorFlags.NONE
@@ -410,12 +414,11 @@ class DeviceSnapshot:
     """
     A device as the broker kept it at the moment of the read. It does not change afterwards.
 
-    Controls without meta are left out, a pushbutton has no value.
+    The fields are those of Device. Controls without meta are left out, a pushbutton has no value.
     """
 
     name: str
-    title: TranslatedTitle
-    driver: Optional[str]
+    meta: DeviceMeta
     controls: dict[str, ControlSnapshot]
     error: ControlErrorFlags = ControlErrorFlags.NONE
 

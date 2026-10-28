@@ -17,15 +17,12 @@ from .._listeners import (
 )
 from .device_manager import DeviceManager
 from .state import ControlRecord, DeviceRecord
-from .values import (
-    ControlErrorFlags,
-    ControlMeta,
-    ControlType,
-    TitleLike,
-    TranslatedTitle,
-)
+from .values import ControlErrorFlags, ControlMeta, ControlType, DeviceMeta, TitleLike
 
 _BUILT_BY_THE_CLIENT = "the objects come from the client, for example from client.get_control"
+# Meta of a control or a device that does not exist, every field empty
+_EMPTY_CONTROL_META = ControlMeta()
+_EMPTY_DEVICE_META = DeviceMeta()
 
 
 class Control:  # pylint: disable=too-many-public-methods
@@ -86,32 +83,12 @@ class Control:  # pylint: disable=too-many-public-methods
         return self.device.is_own
 
     @property
-    def meta(self) -> Optional[ControlMeta]:
+    def meta(self) -> ControlMeta:
         """
-        Meta of the control with every field, None while it does not exist.
+        Meta of the control with every field. While the control does not exist, it is empty.
         """
         record = self._record
-        return record.meta if record else None
-
-    @property
-    def control_type(self) -> Optional[str]:
-        meta = self.meta
-        return meta.control_type if meta else None
-
-    @property
-    def title(self) -> TranslatedTitle:
-        meta = self.meta
-        return meta.title if meta else TranslatedTitle()
-
-    @property
-    def readonly(self) -> bool:
-        meta = self.meta
-        return bool(meta and meta.readonly)
-
-    @property
-    def units(self) -> Optional[str]:
-        meta = self.meta
-        return meta.units if meta else None
+        return record.meta if record and record.meta else _EMPTY_CONTROL_META
 
     @property
     def value(self) -> Any:
@@ -324,14 +301,12 @@ class Device:  # pylint: disable=too-many-public-methods
         return self._device_manager.state.is_own_device(self.name)
 
     @property
-    def title(self) -> TranslatedTitle:
+    def meta(self) -> DeviceMeta:
+        """
+        Meta of the device, its title and driver. While the device has no meta, it is empty.
+        """
         record = self._record
-        return record.title if record else TranslatedTitle()
-
-    @property
-    def driver(self) -> Optional[str]:
-        record = self._record
-        return record.driver if record else None
+        return DeviceMeta(record.title, record.driver) if record else _EMPTY_DEVICE_META
 
     @property
     def error(self) -> ControlErrorFlags:

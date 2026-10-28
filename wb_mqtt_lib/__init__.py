@@ -9,6 +9,7 @@ from ._convention.values import (
     ControlMeta,
     ControlSnapshot,
     ControlType,
+    DeviceMeta,
     DeviceSnapshot,
     TranslatedTitle,
 )
@@ -40,6 +41,7 @@ __all__ = [
     "ControlSnapshot",
     "ControlType",
     "Device",
+    "DeviceMeta",
     "DeviceSnapshot",
     "DeviceTakenError",
     "InvalidNameError",

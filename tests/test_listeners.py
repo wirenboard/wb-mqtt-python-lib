@@ -181,7 +181,7 @@ async def test_device_control_error_fires_at_registration_and_control_meta_on_ch
     remote = await client.get_device("dev")
     errors, metas = [], []
     remote.on_control_error(lambda control, error, previous: errors.append((control.name, error, previous)))
-    remote.on_control_meta(lambda control: metas.append((control.name, control.units)))
+    remote.on_control_meta(lambda control: metas.append((control.name, control.meta.units)))
     await wait_until(lambda: len(errors) == 2)
 
     await first.set_error(ControlErrorFlags.WRITE)
@@ -208,7 +208,7 @@ async def test_every_listener_waits_for_a_control_that_does_not_exist_yet(
     foreign.on_added(events["added"].append)
     foreign.on_value(lambda control, value, previous: events["value"].append(value))
     foreign.on_error(lambda control, error, previous: events["error"].append(error))
-    foreign.on_meta(lambda control: events["meta"].append(control.units))
+    foreign.on_meta(lambda control: events["meta"].append(control.meta.units))
     foreign.on_removed(events["removed"].append)
     value_wait = asyncio.ensure_future(foreign.wait_value(1, timeout=5))
     own_device = await client.create_device("own")
@@ -454,7 +454,7 @@ async def test_device_listeners_see_a_foreign_device_appear_change_and_go(
     await device.create_control("b", ControlType.VALUE, value=2)
     await wait_until(lambda: events == ["added"] and len(remote.controls) == 2)
     await device.update_meta("Second")
-    await wait_until(lambda: events == ["added", "meta"] and remote.title.en == "Second")
+    await wait_until(lambda: events == ["added", "meta"] and remote.meta.title.en == "Second")
     await device.remove()
 
     await wait_until(lambda: events == ["added", "meta", "removed"])
@@ -474,7 +474,7 @@ async def test_device_without_meta_appears_and_goes_with_its_controls(driver: Cl
     events = []
     remote.on_added(lambda device: events.append("added"))
     remote.on_removed(lambda device: events.append("removed"))
-    assert remote.exists and remote.driver is None and list(remote.controls) == ["a"]
+    assert remote.exists and remote.meta.driver is None and list(remote.controls) == ["a"]
 
     await driver.raw.publish("/devices/legacy/controls/b/meta", '{"type": "text"}', retain=True)
     await driver.raw.publish("/devices/legacy/controls/a/meta", "", retain=True)
@@ -497,8 +497,8 @@ async def test_device_listeners_follow_a_name_from_a_foreign_device_to_an_own_on
     await foreign.create_control("temp", ControlType.VALUE, value=1)
     watched = await client.get_device("X")
     events = []
-    watched.on_added(lambda device: events.append(("added", device.driver)))
-    watched.on_meta(lambda device: events.append(("meta", device.title.en)))
+    watched.on_added(lambda device: events.append(("added", device.meta.driver)))
+    watched.on_meta(lambda device: events.append(("meta", device.meta.title.en)))
     watched.on_removed(lambda device: events.append(("removed", None)))
     await wait_until(lambda: len(events) == 1)
 

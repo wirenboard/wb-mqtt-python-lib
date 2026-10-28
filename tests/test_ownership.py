@@ -130,7 +130,7 @@ async def test_removed_own_name_can_go_to_another_driver(driver: Client, client:
     await (await driver.create_device("X")).create_control("temp", ControlType.VALUE, value=7)
     temp = await client.get_control("X/temp", timeout=5)
 
-    assert not temp.is_own and temp.value == 7 and temp.device.driver == "driver"
+    assert not temp.is_own and temp.value == 7 and temp.device.meta.driver == "driver"
 
 
 @NAME_HOLDERS
@@ -238,7 +238,7 @@ async def test_outside_change_of_own_device_lasts_until_reconnect(
     await wait_retained(broker.port, "/devices/dev/#", changed)
     await asyncio.sleep(1)
     assert await read_retained(broker.port, "/devices/dev/#") == changed
-    assert device.is_own and device.driver == "test-service" and channel.exists and channel.value == 12.5
+    assert device.is_own and device.meta.driver == "test-service" and channel.exists and channel.value == 12.5
 
     await restart_broker(broker, client)
     await wait_retained(broker.port, "/devices/dev/#", before)
@@ -292,7 +292,7 @@ async def test_refused_name_is_free_after_the_other_device_is_gone(driver: Clien
     await other_device.remove()
 
     device = await wait_or_dump(client.create_device("X"), timeout=5)
-    assert device.is_own and device.driver == "test-service"
+    assert device.is_own and device.meta.driver == "test-service"
 
 
 async def test_objects_follow_a_watched_name_through_every_owner(driver: Client, client: Client) -> None:
@@ -317,7 +317,7 @@ async def test_objects_follow_a_watched_name_through_every_owner(driver: Client,
     await again.create_control("temp", ControlType.VALUE, value=7)
 
     await wait_until(lambda: temp.exists and temp.value == 7)
-    assert not temp.is_own and temp.device.driver == "driver"
+    assert not temp.is_own and temp.device.meta.driver == "driver"
 
 
 async def test_create_device_cancelled_at_any_point_leaves_the_name_usable(

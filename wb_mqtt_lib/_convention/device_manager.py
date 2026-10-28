@@ -806,8 +806,8 @@ def _build_snapshot(name: str, retained: dict[str, bytes]) -> Optional[DeviceSna
     if device is None or not device.exists:
         return None
     controls = {
-        control_name: ControlSnapshot(control.meta, control.value, control.error)
+        control_name: ControlSnapshot(control_name, control.meta, control.value, control.error)
         for control_name, control in device.controls.items()
         if control.exists
     }
-    return DeviceSnapshot(name, device.title, device.driver, controls, device.error)
+    return DeviceSnapshot(name, DeviceMeta(device.title, device.driver), controls, device.error)

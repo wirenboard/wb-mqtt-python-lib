@@ -130,7 +130,7 @@ async def test_command_to_foreign_readonly_control_is_refused_until_readonly_is_
     with pytest.raises(ReadonlyControlError):
         await remote.set_value(True)
     await relay.update_meta(readonly=False)
-    await wait_until(lambda: not remote.readonly)
+    await wait_until(lambda: not remote.meta.readonly)
     await remote.set_value(True)
 
     await wait_until(lambda: [message.payload for message in sent] == [b"1"])
@@ -213,7 +213,7 @@ async def test_get_device_names_reads_once_without_keeping_subscriptions(
 
 async def test_device_snapshot_reads_once_and_stays_as_read(driver: Client, client: Client) -> None:
     """
-    The snapshot carries the title, the driver, typed values and errors, and leaves no subscription.
+    The snapshot carries the meta, typed values and errors, and leaves no subscription.
 
     It does not follow later changes. A name without a device gives None.
     """
@@ -229,8 +229,8 @@ async def test_device_snapshot_reads_once_and_stays_as_read(driver: Client, clie
     snapshot = await client.get_device_snapshot("dev")
     await temp.set_value(30)
 
-    assert (snapshot.name, snapshot.driver) == ("dev", "driver")
-    assert snapshot.title == TranslatedTitle(en="Device", ru="Устройство")
+    assert (snapshot.name, snapshot.meta.driver) == ("dev", "driver")
+    assert snapshot.meta.title == TranslatedTitle(en="Device", ru="Устройство")
     assert set(snapshot.controls) == {"temp", "relay", "button"}
     assert snapshot.controls["temp"].value == 21.5 and snapshot.controls["temp"].meta.units == "deg C"
     assert snapshot.controls["relay"].value is True
@@ -238,6 +238,34 @@ async def test_device_snapshot_reads_once_and_stays_as_read(driver: Client, clie
     assert snapshot.controls["button"].value is None
     assert internals(client)["subscriptions"] == 0
     assert await client.get_device_snapshot("missing") is None
+
+
+async def test_snapshot_has_the_fields_of_the_live_objects(driver: Client, client: Client) -> None:
+    """
+    A snapshot of a device and of each control has the fields of Device and Control with the same values.
+    """
+    device = await driver.create_device("dev", title={"en": "Device", "ru": "Устройство"})
+    await device.create_control("temp", ControlType.VALUE, units="deg C", precision=0.1, value=21.54)
+    relay = await device.create_control("relay", ControlType.SWITCH, value=True, readonly=True)
+    await device.create_control("status", ControlType.TEXT, value="ok")
+    await device.create_control("button", ControlType.PUSHBUTTON)
+    await relay.set_error(ControlErrorFlags.READ)
+    await device.set_error(ControlErrorFlags.WRITE)
+    remote = await client.get_device("dev")
+    await wait_until(lambda: remote.error == ControlErrorFlags.WRITE and remote.controls["relay"].error)
+
+    snapshot = await client.get_device_snapshot("dev")
+
+    assert (snapshot.name, snapshot.meta, snapshot.error) == (remote.name, remote.meta, remote.error)
+    assert set(snapshot.controls) == set(remote.controls)
+    for name, control in snapshot.controls.items():
+        live = remote.controls[name]
+        assert (control.name, control.meta, control.value, control.error) == (
+            live.name,
+            live.meta,
+            live.value,
+            live.error,
+        )
 
 
 async def test_device_back_without_its_meta_has_no_old_title_or_driver(
@@ -258,7 +286,11 @@ async def test_device_back_without_its_meta_has_no_old_title_or_driver(
 
     await wait_until(lambda: remote.exists)
     snapshot = await client.get_device_snapshot("X")
-    assert (remote.driver, remote.title) == (snapshot.driver, snapshot.title) == (None, TranslatedTitle())
+    assert (
+        (remote.meta.driver, remote.meta.title)
+        == (snapshot.meta.driver, snapshot.meta.title)
+        == (None, TranslatedTitle())
+    )
 
 
 async def test_device_meta_erased_while_its_controls_stay_is_a_meta_change(
@@ -272,7 +304,7 @@ async def test_device_meta_erased_while_its_controls_stay_is_a_meta_change(
     await device.create_control("a", ControlType.VALUE, value=1)
     remote = await client.get_device("X")
     metas: list[tuple[TranslatedTitle, Any]] = []
-    remote.on_meta(lambda changed: metas.append((changed.title, changed.driver)))
+    remote.on_meta(lambda changed: metas.append((changed.meta.title, changed.meta.driver)))
 
     await driver.raw.publish("/devices/X/meta", "", retain=True)
 
@@ -411,7 +443,7 @@ async def test_malformed_foreign_meta_does_not_break_reading(connect: ConnectCli
     weird = await client.get_device("weird", timeout=5)
     await client.remove_driver_devices()
 
-    assert (odd.value, odd.title, odd.meta.enum, odd.units, odd.meta.order, odd.meta.precision) == (
+    assert (odd.value, odd.meta.title, odd.meta.enum, odd.meta.units, odd.meta.order, odd.meta.precision) == (
         21.5,
         TranslatedTitle(),
         None,
@@ -420,8 +452,8 @@ async def test_malformed_foreign_meta_does_not_break_reading(connect: ConnectCli
         None,
     )
     await odd.set_value(1.25)
-    assert list(bad.controls) == ["odd"] and bad.driver is None
-    assert weird.exists and weird.driver is None and weird.title == TranslatedTitle()
+    assert list(bad.controls) == ["odd"] and bad.meta.driver is None
+    assert weird.exists and weird.meta.driver is None and weird.meta.title == TranslatedTitle()
 
 
 async def test_foreign_meta_numbers_out_of_range_are_dropped(connect: ConnectClient) -> None:
@@ -623,7 +655,7 @@ async def test_new_type_of_a_foreign_control_reads_its_value_again_without_an_ev
     values: list = []
     metas: list = []
     remote.on_value(lambda _control, value, _previous: values.append(value))
-    remote.on_meta(lambda control: metas.append(control.control_type))
+    remote.on_meta(lambda control: metas.append(control.meta.control_type))
     await wait_until(lambda: len(values) == 1)
 
     def fits(value: Any) -> bool:

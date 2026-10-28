@@ -179,12 +179,14 @@ async def test_update_meta_changes_fields_on_the_fly(
     remote = await client.get_control("test_dev/temp")
     remote_device = await client.get_device("test_dev")
     metas = []
-    remote.on_meta(lambda control: metas.append((control.title, control.readonly, control.meta.hidden)))
+    remote.on_meta(
+        lambda control: metas.append((control.meta.title, control.meta.readonly, control.meta.hidden))
+    )
 
     await temp.update_meta(title={"en": "Temperature", "ru": "Температура"}, readonly=True, hidden=False)
     await device.update_meta(title="New")
 
-    await wait_until(lambda: len(metas) == 1 and remote_device.title.en == "New")
+    await wait_until(lambda: len(metas) == 1 and remote_device.meta.title.en == "New")
     assert metas == [(TranslatedTitle("Temperature", "Температура"), True, False)]
     retained = await read_retained(broker.port, "/devices/test_dev/#")
     assert json.loads(retained["/devices/test_dev/controls/temp/meta"]) == {
