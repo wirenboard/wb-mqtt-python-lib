@@ -267,20 +267,20 @@ class Client:  # pylint: disable=too-many-instance-attributes
             await self._device_manager.wait_device_exists(name, timeout)
         return self._make_device(name)
 
-    async def get_control(self, name: str, timeout: Optional[float] = None) -> Control:
+    async def get_control(self, address: str, timeout: Optional[float] = None) -> Control:
         """
-        Control by name «device/control». Without timeout it waits only for the broker answer,
+        Control by address «device/control». Without timeout it waits only for the broker answer,
         like get_device.
 
         Raises:
-            ValueError: the name is not «device/control» or has forbidden characters.
+            ValueError: the address is not «device/control» or has forbidden characters.
             TimeoutError: timeout is given and the control did not appear in time.
             BrokerDisconnectedError: no broker link to read a device not read before.
             ClientClosedError: the client is closed or closes while waiting.
         """
-        device_name, separator, control_name = name.partition("/")
+        device_name, separator, control_name = address.partition("/")
         if not separator:
-            raise ValueError(f"control name {name!r} must look like device/control")
+            raise ValueError(f"control address {address!r} must look like device/control")
         check_name(control_name, "control")
         await self._device_manager.watch_device(device_name)
         if timeout is not None:

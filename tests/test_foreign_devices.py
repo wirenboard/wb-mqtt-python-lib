@@ -449,9 +449,9 @@ async def test_nan_after_nan_is_no_change(driver: Client, client: Client) -> Non
     assert len(values) == 3 and values[0] == 1 and math.isnan(values[1])
 
 
-async def test_control_name_without_a_slash_is_refused(client: Client) -> None:
+async def test_control_address_without_a_slash_is_refused(client: Client) -> None:
     """
-    get_control takes «device/control». A name without the slash is refused before subscribing.
+    get_control takes «device/control». An address without the slash is refused before subscribing.
     """
     with pytest.raises(ValueError):
         await client.get_control("dev")
