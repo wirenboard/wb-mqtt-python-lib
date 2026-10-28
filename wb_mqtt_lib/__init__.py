@@ -13,10 +13,12 @@ from ._convention.values import (
     TranslatedTitle,
 )
 from ._errors import (
+    AlreadyCreatedError,
     BrokerDisconnectedError,
     ClientClosedError,
     ControlMissingError,
     DeviceTakenError,
+    InvalidNameError,
     LoginRejectedError,
     MqttLibError,
     NotOwnError,
@@ -26,6 +28,7 @@ from ._mqtt.subscriber import Message
 
 __all__ = [
     "DEFAULT_BROKER_URL",
+    "AlreadyCreatedError",
     "BrokerDisconnectedError",
     "Client",
     "ClientClosedError",
@@ -38,6 +41,7 @@ __all__ = [
     "Device",
     "DeviceSnapshot",
     "DeviceTakenError",
+    "InvalidNameError",
     "LoginRejectedError",
     "Message",
     "MqttLibError",

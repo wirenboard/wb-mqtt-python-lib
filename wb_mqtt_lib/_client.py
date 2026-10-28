@@ -11,7 +11,7 @@ from ._convention.device_manager import DeviceManager
 from ._convention.devices import Control, Device
 from ._convention.state import State
 from ._convention.values import DeviceSnapshot, TitleLike, check_name
-from ._errors import ClientClosedError, LoginRejectedError
+from ._errors import ClientClosedError, InvalidNameError, LoginRejectedError
 from ._listeners import (
     ConnectionHandler,
     Handler,
@@ -52,7 +52,8 @@ class Client:  # pylint: disable=too-many-instance-attributes
             as user:password@ before the host, percent-encoded.
 
     Raises:
-        ValueError: the driver name or the URL is invalid.
+        InvalidNameError: the driver name is invalid.
+        ValueError: the URL is invalid.
     """
 
     def __init__(self, driver: str, broker_url: str = DEFAULT_BROKER_URL) -> None:
@@ -239,7 +240,8 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 publishes its meta again after its reconnect.
 
         Raises:
-            ValueError: the name is invalid or the device exists already.
+            InvalidNameError: the name is invalid.
+            AlreadyCreatedError: this client created the device already.
             TypeError: the title is not a string or a {"en": ..., "ru": ...} mapping.
             DeviceTakenError: the name belongs to a device of another driver or a device without a driver,
                 and force is False.
@@ -257,7 +259,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         does not exist. exists is then False and on_added fires when it appears.
 
         Raises:
-            ValueError: the name has forbidden characters.
+            InvalidNameError: the name has forbidden characters.
             TimeoutError: timeout is given and the device did not appear in time.
             BrokerDisconnectedError: no broker link to read a device not read before.
             ClientClosedError: the client is closed or closes while waiting.
@@ -273,14 +275,14 @@ class Client:  # pylint: disable=too-many-instance-attributes
         like get_device.
 
         Raises:
-            ValueError: the address is not «device/control» or has forbidden characters.
+            InvalidNameError: the address is not «device/control» or has forbidden characters.
             TimeoutError: timeout is given and the control did not appear in time.
             BrokerDisconnectedError: no broker link to read a device not read before.
             ClientClosedError: the client is closed or closes while waiting.
         """
         device_name, separator, control_name = address.partition("/")
         if not separator:
-            raise ValueError(f"control address {address!r} must look like device/control")
+            raise InvalidNameError(f"control address {address!r} must look like device/control")
         check_name(control_name, "control")
         await self._device_manager.watch_device(device_name)
         if timeout is not None:
@@ -308,7 +310,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             The snapshot, None when the broker has no device under the name.
 
         Raises:
-            ValueError: the name is invalid.
+            InvalidNameError: the name is invalid.
             BrokerDisconnectedError: no broker link.
             ClientClosedError: the client is closed or closes while waiting.
         """

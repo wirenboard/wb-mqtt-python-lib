@@ -426,7 +426,7 @@ async def test_two_creates_of_one_name_over_leftovers_make_one_device(
 ) -> None:
     """
     Two create_device of one name at once over leftovers of a previous run. Both pass the check of the name,
-    one takes it after the erasure, the other gets ValueError and does not publish over it.
+    one takes it after the erasure, the other gets AlreadyCreatedError and does not publish over it.
     """
     previous_run = await connect("service")
     await (await previous_run.create_device("X")).create_control("old", ControlType.VALUE, value=1)
@@ -438,7 +438,7 @@ async def test_two_creates_of_one_name_over_leftovers_make_one_device(
         timeout=5,
     )
 
-    assert sorted(type(result).__name__ for result in results) == ["Device", "ValueError"]
+    assert sorted(type(result).__name__ for result in results) == ["AlreadyCreatedError", "Device"]
     await wait_retained(broker.port, "/devices/X/#", {"/devices/X/meta": b'{"driver": "service"}'})
     assert internals(client)["subscriptions"] == 1
 

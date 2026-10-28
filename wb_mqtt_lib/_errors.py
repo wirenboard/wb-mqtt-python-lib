@@ -48,3 +48,15 @@ class DeviceTakenError(MqttLibError, ValueError):
     The name is taken by a device of another driver, a device without a driver or controls alone,
     the client does not publish over it.
     """
+
+
+class AlreadyCreatedError(MqttLibError, ValueError):
+    """
+    The device or the control was created by this client already.
+    """
+
+
+class InvalidNameError(MqttLibError, ValueError):
+    """
+    A device, control or driver name, or a control address, that would break the topics or the connection.
+    """

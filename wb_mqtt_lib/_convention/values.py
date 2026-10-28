@@ -13,6 +13,7 @@ from enum import Flag, StrEnum, auto
 from types import MappingProxyType
 from typing import Any, Mapping, Optional, Union
 
+from .._errors import InvalidNameError
 from .._mqtt.checks import is_int, is_refused_by_broker, is_utf8_text
 
 # ------------------------------------------------------------
@@ -87,14 +88,14 @@ def check_name(name: str, entity: str) -> None:
         entity: whose name it is, "device", "control" or "driver", for the error text.
 
     Raises:
-        ValueError: the name is empty or contains /, +, #, a control character or another character
+        InvalidNameError: the name is empty or contains /, +, #, a control character or another character
             the broker refuses.
     """
     if not isinstance(name, str) or not name:
-        raise ValueError(f"{entity} name must be a non-empty string")
+        raise InvalidNameError(f"{entity} name must be a non-empty string")
     forbidden = {char for char in name if char in _FORBIDDEN_NAME_CHARS or is_refused_by_broker(char)}
     if forbidden:
-        raise ValueError(f"{entity} name {name!r} contains forbidden characters {sorted(forbidden)}")
+        raise InvalidNameError(f"{entity} name {name!r} contains forbidden characters {sorted(forbidden)}")
 
 
 # ------------------------------------------------------------

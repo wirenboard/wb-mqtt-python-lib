@@ -11,10 +11,12 @@ import dataclasses
 from typing import Any, Callable, Iterable, Optional
 
 from .._errors import (
+    AlreadyCreatedError,
     BrokerDisconnectedError,
     ClientClosedError,
     ControlMissingError,
     DeviceTakenError,
+    InvalidNameError,
     NotOwnError,
 )
 from .._listeners import Handler, ListenerRegistry
@@ -94,7 +96,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         Subscribe to the whole device unless it is own, return after the broker delivered what it keeps.
 
         Raises:
-            ValueError: the name is invalid.
+            InvalidNameError: the name is invalid.
             BrokerDisconnectedError: no broker link to read the device.
             ClientClosedError: the client is closed or closes while waiting.
         """
@@ -162,8 +164,8 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         check_name(name, "device")
         title = TranslatedTitle.parse(title)
         device_topics = topics.DeviceTopics(
-            meta=checks.CheckedTopic(topics.device_meta(name)),
-            error=checks.CheckedTopic(topics.device_error(name)),
+            meta=_get_checked_topic(topics.device_meta(name), "device"),
+            error=_get_checked_topic(topics.device_error(name), "device"),
         )
         device = self.state.ensure_device(name)
         _check_not_created(name, device)
@@ -267,9 +269,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         self._raise_if_closed()
         check_name(control_name, "control")
         control_topics = topics.ControlTopics(
-            value=checks.CheckedTopic(topics.control_value(device_name, control_name)),
-            meta=checks.CheckedTopic(topics.control_meta(device_name, control_name)),
-            error=checks.CheckedTopic(topics.control_error(device_name, control_name)),
+            value=_get_checked_topic(topics.control_value(device_name, control_name), "control"),
+            meta=_get_checked_topic(topics.control_meta(device_name, control_name), "control"),
+            error=_get_checked_topic(topics.control_error(device_name, control_name), "control"),
         )
         try:
             control_type = ControlType(control_type)
@@ -279,7 +281,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         device = self._require_own_device(device_name)
         existing = self.state.get_control(device_name, control_name)
         if existing is not None and existing.exists:
-            raise ValueError(f"control {device_name}/{control_name} exists already")
+            raise AlreadyCreatedError(f"control {device_name}/{control_name} exists already")
 
         # Meta, by default the control goes last on the card
         fields = parse_meta_fields(meta_fields)
@@ -629,7 +631,17 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
 
 def _check_not_created(name: str, device: DeviceRecord) -> None:
     if device.ownership is Ownership.OWN:
-        raise ValueError(f"device {name} exists already")
+        raise AlreadyCreatedError(f"device {name} exists already")
+
+
+def _get_checked_topic(topic: str, entity: str) -> checks.CheckedTopic:
+    """
+    A topic of an own device or control. A name that makes it longer than the broker takes is an invalid name.
+    """
+    try:
+        return checks.CheckedTopic(topic)
+    except ValueError as error:
+        raise InvalidNameError(f"{entity} name makes a topic the broker refuses: {error}") from error
 
 
 def _check_error_flags(error: Any) -> None:

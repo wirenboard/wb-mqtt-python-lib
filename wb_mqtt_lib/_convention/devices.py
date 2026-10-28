@@ -470,8 +470,9 @@ class Device:  # pylint: disable=too-many-public-methods
             enum: {value: title} for a value with names.
 
         Raises:
-            ValueError: the name, the type, precision, minimum or maximum is invalid, or the control
-                exists already.
+            InvalidNameError: the name is invalid.
+            AlreadyCreatedError: this client created the control already.
+            ValueError: the type, precision, minimum or maximum is invalid.
             TypeError: the value does not fit the type, or a field has the wrong type, for example units
                 that is not a string, order that is not an int, or a title or enum that is not valid.
             NotOwnError: the device is foreign.

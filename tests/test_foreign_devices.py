@@ -28,6 +28,7 @@ from wb_mqtt_lib import (
     ControlMissingError,
     ControlType,
     Device,
+    InvalidNameError,
     NotOwnError,
     TranslatedTitle,
 )
@@ -453,7 +454,7 @@ async def test_control_address_without_a_slash_is_refused(client: Client) -> Non
     """
     get_control takes «device/control». An address without the slash is refused before subscribing.
     """
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidNameError):
         await client.get_control("dev")
 
     assert internals(client)["subscriptions"] == 0

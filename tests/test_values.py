@@ -16,7 +16,14 @@ from tests.broker import (
     wait_until,
 )
 from tests.conftest import ConnectClient
-from wb_mqtt_lib import Client, ControlErrorFlags, ControlType, Message, TranslatedTitle
+from wb_mqtt_lib import (
+    Client,
+    ControlErrorFlags,
+    ControlType,
+    InvalidNameError,
+    Message,
+    TranslatedTitle,
+)
 
 # Numbers as wb-rules publishes them with precision and without it, checked on the controller
 FORMATTED = [
@@ -184,8 +191,8 @@ async def test_invalid_declaration_publishes_nothing(broker: MosquittoBroker, cl
         (device.create_control("a", ControlType.VALUE, order=float("nan")), TypeError),
         (device.create_control("a", ControlType.VALUE, readonly="yes"), TypeError),
         (device.create_control("a", ControlType.VALUE, hidden=None), TypeError),
-        (device.create_control("a/b", ControlType.VALUE), ValueError),
-        (device.create_control("x" * 70000, ControlType.VALUE, value=1), ValueError),
+        (device.create_control("a/b", ControlType.VALUE), InvalidNameError),
+        (device.create_control("x" * 70000, ControlType.VALUE, value=1), InvalidNameError),
     ]
     for call, error in calls:
         with pytest.raises(error):

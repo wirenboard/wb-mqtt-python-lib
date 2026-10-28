@@ -29,13 +29,16 @@ from tests.broker import (
 )
 from tests.conftest import ConnectClient
 from wb_mqtt_lib import (
+    AlreadyCreatedError,
     BrokerDisconnectedError,
     Client,
     Control,
     ControlErrorFlags,
     ControlType,
     DeviceTakenError,
+    InvalidNameError,
     Message,
+    MqttLibError,
     NotOwnError,
     TranslatedTitle,
 )
@@ -393,10 +396,11 @@ async def test_invalid_name_is_refused_before_the_broker_hears_of_it(
     ]
 
     for call in calls:
-        with pytest.raises(ValueError):
+        with pytest.raises(InvalidNameError):
             await call
-    with pytest.raises(ValueError):
+    with pytest.raises(InvalidNameError) as error:
         Client(name)
+    assert isinstance(error.value, MqttLibError) and isinstance(error.value, ValueError)
 
     assert internals(client)["subscriptions"] == subscriptions
     assert list(await read_retained(broker.port, "#")) == ["/devices/dev/meta"]
@@ -435,22 +439,24 @@ async def test_create_device_returns_the_device_when_the_link_drops_at_its_comma
 
 async def test_device_and_control_exist_once(client: Client) -> None:
     """
-    A second create of the same name is a ValueError, also two creates of one device at once.
+    A second create of the same name is an AlreadyCreatedError, also two creates of one device at once.
+    It is a MqttLibError and a ValueError too.
     """
     device = await client.create_device("X")
     await device.create_control("c", ControlType.VALUE, value=1)
 
-    with pytest.raises(ValueError) as error:
+    with pytest.raises(AlreadyCreatedError) as error:
         await client.create_device("X")
     assert not isinstance(error.value, DeviceTakenError)
-    with pytest.raises(ValueError):
+    assert isinstance(error.value, MqttLibError) and isinstance(error.value, ValueError)
+    with pytest.raises(AlreadyCreatedError):
         await device.create_control("c", ControlType.VALUE)
     subscriptions = internals(client)["subscriptions"]
     results = await asyncio.gather(
         client.create_device("Y"), client.create_device("Y"), return_exceptions=True
     )
 
-    assert sorted(type(result).__name__ for result in results) == ["Device", "ValueError"]
+    assert sorted(type(result).__name__ for result in results) == ["AlreadyCreatedError", "Device"]
     # the commands to the controls of Y, an own device is not followed otherwise
     assert internals(client)["subscriptions"] == subscriptions + 1
 
