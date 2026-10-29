@@ -85,8 +85,8 @@ async def test_close_cancels_tasks_and_handlers_that_wait_for_the_broker(
 ) -> None:
     """
     close() cancels a background task and a handler of the client while they wait for a value, also a loop
-    that catches Exception around its wait, and nothing of the client keeps running. The wait of other code
-    ends with ClientClosedError.
+    that catches Exception around its wait, and nothing of the client keeps running. Waits of other code
+    for a value or for appearance end with ClientClosedError instead of their timeout.
     """
     await (await driver.create_device("dev")).create_control("level", ControlType.VALUE, value=1)
     level = await client.get_control("dev/level")
@@ -110,33 +110,22 @@ async def test_close_cancels_tasks_and_handlers_that_wait_for_the_broker(
     level.on_value(waiting_handler)
     waiting = client.start_task(level.wait_value(never, timeout=60))
     looping = client.start_task(poll_forever())
-    outside = asyncio.ensure_future(level.wait_value(never, timeout=60))
     await wait_or_dump(started.wait(), timeout=2)
     await asyncio.sleep(0.1)
+    waits = internals(client)["waits"]
+    outside = [
+        asyncio.ensure_future(level.wait_value(never, timeout=60)),
+        asyncio.ensure_future(client.get_control("missing/ctl", timeout=60)),
+        asyncio.ensure_future(client.get_device("missing_dev", timeout=60)),
+    ]
+    await wait_until(lambda: internals(client)["waits"] == waits + len(outside))
 
     await wait_or_dump(client.close(), timeout=3)
 
     assert waiting.cancelled() and looping.cancelled() and not caught
     assert internals(client)["listeners"] == 0 and internals(client)["service tasks"] == 0
     assert not client.is_connected
-    with pytest.raises(ClientClosedError):
-        await wait_or_dump(outside, timeout=2)
-
-
-async def test_close_wakes_pending_waits(client: Client, level: Control) -> None:
-    """
-    Waits for a value or for appearance end with ClientClosedError instead of their timeout.
-    """
-    waits = [
-        asyncio.ensure_future(level.wait_value(5, timeout=30)),
-        asyncio.ensure_future(client.get_control("missing/ctl", timeout=30)),
-        asyncio.ensure_future(client.get_device("missing_dev", timeout=30)),
-    ]
-    await wait_until(lambda: internals(client)["waits"] == 3)
-
-    await wait_or_dump(client.close(), timeout=3)
-
-    for wait in waits:
+    for wait in outside:
         with pytest.raises(ClientClosedError):
             await wait_or_dump(wait, timeout=2)
 
@@ -230,37 +219,23 @@ async def test_async_with_connects_and_closes(broker: MosquittoBroker) -> None:
     )
 
 
-async def test_cancelled_connect_leaves_no_tasks_and_frees_the_driver(broker: MosquittoBroker) -> None:
+async def test_connect_given_up_while_the_broker_is_down_stops_retrying_and_reports_nothing(
+    broker: MosquittoBroker,
+) -> None:
     """
-    The broker is down and the service gives up waiting. The client stops retrying in the background.
+    The broker is down and the service gives up waiting. The client stops retrying in the background
+    and frees the driver, a handler registered before connect() hears nothing. Once the broker is up,
+    connect() of the same client works and the handler gets True.
     """
     await asyncio.to_thread(broker.stop)
     tasks_before = len(asyncio.all_tasks())
-    client = Client("test-service", broker.url())
-
-    with pytest.raises(TimeoutError):
-        await asyncio.wait_for(client.connect(), 1.0)
-
-    await wait_for_task_count(tasks_before)
-    await asyncio.to_thread(broker.start)
-    second = Client("test-service", broker.url())
-    await wait_or_dump(second.connect(), timeout=5)
-    await wait_or_dump(second.close(), timeout=5)
-
-
-async def test_connection_handler_gets_no_false_before_the_first_connection(broker: MosquittoBroker) -> None:
-    """
-    A handler registered before connect() hears nothing while the broker is down, then True once
-    the client connects.
-    """
-    await asyncio.to_thread(broker.stop)
     client = Client("test-service", broker.url())
     changes: list[bool] = []
     client.on_connection_change(changes.append)
     try:
         with pytest.raises(TimeoutError):
             await asyncio.wait_for(client.connect(), 1.0)
-        await asyncio.sleep(0.2)
+        await wait_for_task_count(tasks_before)
         assert not changes
 
         await asyncio.to_thread(broker.start)

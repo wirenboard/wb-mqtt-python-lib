@@ -221,15 +221,18 @@ async def test_second_handler_and_a_read_of_a_subscribed_filter_need_no_broker(
     A second handler on a subscribed filter and a read of that filter get the state from the subscription.
 
     The link loses everything meanwhile, and both return at once. The subscription follows live retained
-    messages, so a topic published after it is there too, and a kept topic has its newer value.
+    messages, so a topic published after it is there too, a kept topic has its newer value, and a topic
+    erased after it is gone.
     """
     await driver.raw.publish("/state/x", "1", retain=True)
+    await driver.raw.publish("/state/z", "1", retain=True)
     proxy, client = dead_link
     first: list[Message] = []
     await client.raw.subscribe("/state/#", first.append)
     await driver.raw.publish("/state/x", "3", retain=True)
     await driver.raw.publish("/state/y", "2", retain=True)
-    await wait_until(lambda: len(first) == 3)
+    await driver.raw.publish("/state/z", "", retain=True)
+    await wait_until(lambda: len(first) == 5)
     proxy.dead = True
     second: list[Message] = []
 
@@ -275,23 +278,6 @@ async def test_raw_handler_over_a_read_device_gets_no_repeats_and_the_device_no_
         ("/devices/dev/controls/temp", b"2", True),
         ("/devices/dev/controls/button", b"1", False),
     ]
-
-
-async def test_read_of_a_subscribed_filter_leaves_out_a_topic_erased_meanwhile(
-    driver: Client, client: Client
-) -> None:
-    """
-    A subscription follows live erasures too. A read of its filter, answered without the broker, does not
-    give back a topic erased after the subscription.
-    """
-    await driver.raw.publish("/state/x", "1", retain=True)
-    await driver.raw.publish("/state/y", "2", retain=True)
-    seen: list[Message] = []
-    await client.raw.subscribe("/state/#", seen.append)
-    await driver.raw.publish("/state/x", "", retain=True)
-    await wait_until(lambda: len(seen) == 3)
-
-    assert await wait_or_dump(client.raw.read("/state/#"), timeout=2) == {"/state/y": b"2"}
 
 
 async def test_read_leaves_out_a_topic_erased_before_its_retained_messages_end(

@@ -37,52 +37,48 @@ from wb_mqtt_lib import (
 
 
 @pytest.mark.parametrize(
-    "control_type, payload, expected",
+    "meta, payload, expected",
     [
-        ("switch", "1", True),
-        ("switch", "0", False),
-        ("value", "21.5", 21.5),
-        ("value", "7", 7),
-        ("range", "100", 100),
-        ("rgb", "255;0;10", (255, 0, 10)),
-        ("text", "hello", "hello"),
-        ("voltage", "24.1", 24.1),
-        ("future_type", "abc", "abc"),
+        ({"type": "switch"}, "1", True),
+        ({"type": "switch"}, "0", False),
+        ({"type": "value"}, "21.5", 21.5),
+        ({"type": "value"}, "7", 7),
+        ({"type": "value", "precision": 0.1}, "21.54", 21.54),
+        ({"type": "range"}, "100", 100),
+        ({"type": "rgb"}, "255;0;10", (255, 0, 10)),
+        ({"type": "text"}, "hello", "hello"),
+        ({"type": "voltage"}, "24.1", 24.1),
+        ({"type": "future_type"}, "abc", "abc"),
+    ],
+    ids=[
+        "switch on",
+        "switch off",
+        "float",
+        "int",
+        "precision",
+        "range",
+        "rgb",
+        "text",
+        "deprecated",
+        "unknown",
     ],
 )
 async def test_value_comes_typed_by_meta(
-    driver: Client, client: Client, control_type: str, payload: str, expected: object
+    driver: Client, client: Client, meta: dict, payload: str, expected: object
 ) -> None:
     """
-    The service gets switch as bool, value and range as numbers, rgb as three numbers.
+    The service gets switch as bool, value and range as numbers, rgb as three numbers. A foreign value comes
+    as the broker sent it, the precision of the driver does not round it again.
 
     A deprecated type derived from value comes as a number too, an unknown type comes as the string
     from the topic, without a guess at its type.
     """
     base = "/devices/dev/controls/ctl"
-    await publish_retained(driver, {f"{base}/meta": json.dumps({"type": control_type}), base: payload})
+    await publish_retained(driver, {f"{base}/meta": json.dumps(meta), base: payload})
 
     control = await client.get_control("dev/ctl")
 
     assert control.exists and control.value == expected
-
-
-async def test_foreign_precision_does_not_round_the_received_payload(driver: Client, client: Client) -> None:
-    """
-    A foreign value comes as the broker sent it, the precision of the driver does not round it again.
-    """
-    await publish_retained(
-        driver,
-        {
-            "/devices/dev/meta": '{"driver":"driver"}',
-            "/devices/dev/controls/ctl/meta": '{"type":"value","precision":0.1}',
-            "/devices/dev/controls/ctl": "21.54",
-        },
-    )
-
-    control = await client.get_control("dev/ctl")
-
-    assert control.value == 21.54
 
 
 async def test_command_to_foreign_control_goes_to_on_and_value_follows_driver(
@@ -211,53 +207,32 @@ async def test_get_device_names_reads_once_without_keeping_subscriptions(
     assert internals(client)["subscriptions"] == 0
 
 
-async def test_device_snapshot_reads_once_and_stays_as_read(driver: Client, client: Client) -> None:
-    """
-    The snapshot carries the meta, typed values and errors, and leaves no subscription.
-
-    It does not follow later changes. A name without a device gives None.
-    """
-    device = await driver.create_device("dev", title={"en": "Device", "ru": "Устройство"})
-    temp = await device.create_control("temp", ControlType.VALUE, units="deg C", value=21.5)
-    relay = await device.create_control("relay", ControlType.SWITCH, value=True)
-    await relay.set_error(ControlErrorFlags.READ)
-    await device.create_control("button", ControlType.PUSHBUTTON)
-    # A retained value on a pushbutton is a leftover, not a value
-    await driver.raw.publish("/devices/dev/controls/button", "1", retain=True)
-    await driver.raw.publish("/devices/dev/controls/no_meta", "5", retain=True)
-
-    snapshot = await client.get_device_snapshot("dev")
-    await temp.set_value(30)
-
-    assert (snapshot.name, snapshot.meta.driver) == ("dev", "driver")
-    assert snapshot.meta.title == TranslatedTitle(en="Device", ru="Устройство")
-    assert set(snapshot.controls) == {"temp", "relay", "button"}
-    assert snapshot.controls["temp"].value == 21.5 and snapshot.controls["temp"].meta.units == "deg C"
-    assert snapshot.controls["relay"].value is True
-    assert snapshot.controls["relay"].error == ControlErrorFlags.READ
-    assert snapshot.controls["button"].value is None
-    assert internals(client)["subscriptions"] == 0
-    assert await client.get_device_snapshot("missing") is None
-
-
-async def test_snapshot_has_the_fields_of_the_live_objects(driver: Client, client: Client) -> None:
+async def test_device_snapshot_has_the_fields_of_the_live_objects_and_stays_as_read(
+    driver: Client, client: Client
+) -> None:
     """
     A snapshot of a device and of each control has the fields of Device and Control with the same values.
+    A retained value on a pushbutton is a leftover, a control without meta is left out. The snapshot leaves
+    no subscription and does not follow later changes. A name without a device gives None.
     """
     device = await driver.create_device("dev", title={"en": "Device", "ru": "Устройство"})
-    await device.create_control("temp", ControlType.VALUE, units="deg C", precision=0.1, value=21.54)
+    temp = await device.create_control("temp", ControlType.VALUE, units="deg C", precision=0.1, value=21.54)
     relay = await device.create_control("relay", ControlType.SWITCH, value=True, readonly=True)
     await device.create_control("status", ControlType.TEXT, value="ok")
     await device.create_control("button", ControlType.PUSHBUTTON)
     await relay.set_error(ControlErrorFlags.READ)
     await device.set_error(ControlErrorFlags.WRITE)
-    remote = await client.get_device("dev")
-    await wait_until(lambda: remote.error == ControlErrorFlags.WRITE and remote.controls["relay"].error)
+    # Raw retained messages wait for PUBACK, so the broker has everything above once they return
+    await driver.raw.publish("/devices/dev/controls/button", "1", retain=True)
+    await driver.raw.publish("/devices/dev/controls/no_meta", "5", retain=True)
 
     snapshot = await client.get_device_snapshot("dev")
 
+    assert internals(client)["subscriptions"] == 0
+    remote = await client.get_device("dev")
+    assert set(snapshot.controls) == set(remote.controls) == {"temp", "relay", "status", "button"}
     assert (snapshot.name, snapshot.meta, snapshot.error) == (remote.name, remote.meta, remote.error)
-    assert set(snapshot.controls) == set(remote.controls)
+    assert snapshot.error and snapshot.controls["relay"].error
     for name, control in snapshot.controls.items():
         live = remote.controls[name]
         assert (control.name, control.meta, control.value, control.error) == (
@@ -266,6 +241,10 @@ async def test_snapshot_has_the_fields_of_the_live_objects(driver: Client, clien
             live.value,
             live.error,
         )
+    await temp.set_value(30)
+    await wait_until(lambda: remote.controls["temp"].value == 30)
+    assert snapshot.controls["temp"].value == 21.5
+    assert await client.get_device_snapshot("missing") is None
 
 
 async def test_device_back_without_its_meta_has_no_old_title_or_driver(
@@ -574,11 +553,11 @@ async def test_subscription_that_fails_after_its_caller_gave_up_is_tried_again(
     assert device.exists and device.controls["temp"].value == 1
 
 
-async def test_foreign_device_error_is_read_live_and_in_a_snapshot(
+async def test_foreign_device_error_follows_the_broker(
     broker: MosquittoBroker, driver: Client, client: Client
 ) -> None:
     """
-    The error of a foreign device follows the broker, the snapshot keeps the error it read.
+    The error of a foreign device follows the broker, on_error gets the current one at registration.
     """
     device = await driver.create_device("dev")
     await device.create_control("temp", ControlType.VALUE, value=1)
@@ -587,13 +566,12 @@ async def test_foreign_device_error_is_read_live_and_in_a_snapshot(
     remote = await client.get_device("dev")
     errors = []
     remote.on_error(lambda _device, error, previous: errors.append((error, previous)))
-    snapshot = await client.get_device_snapshot("dev")
 
     await device.set_error(ControlErrorFlags.NONE)
 
     await wait_until(lambda: len(errors) == 2)
     assert errors == [(ControlErrorFlags.READ, None), (ControlErrorFlags.NONE, ControlErrorFlags.READ)]
-    assert remote.error == ControlErrorFlags.NONE and snapshot.error == ControlErrorFlags.READ
+    assert remote.error == ControlErrorFlags.NONE
 
 
 @pytest.mark.parametrize(

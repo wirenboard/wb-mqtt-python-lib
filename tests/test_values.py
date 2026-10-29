@@ -52,7 +52,22 @@ FORMATTED = [
     (ControlType.W1_ID, None, 2**63, b"9223372036854775808"),
 ]
 
+# A valid value of each type and its payload, a refused value must not replace it
+INITIAL = {
+    ControlType.VALUE: (5, b"5"),
+    ControlType.SWITCH: (True, b"1"),
+    ControlType.ALARM: (True, b"1"),
+    ControlType.WO_SWITCH: (False, b"0"),
+    ControlType.RGB: ((1, 2, 3), b"1;2;3"),
+    ControlType.LOCAL_TIME: (1, b"1"),
+    ControlType.W1_ID: (1, b"1"),
+    ControlType.TEXT: ("on", b"on"),
+}
+
 REFUSED = [
+    (ControlType.VALUE, None),
+    (ControlType.SWITCH, None),
+    (ControlType.TEXT, None),
     (ControlType.VALUE, True),
     (ControlType.VALUE, "5"),
     (ControlType.VALUE, float("nan")),
@@ -109,25 +124,29 @@ async def test_value_of_another_type_is_refused_before_publication(
     broker: MosquittoBroker, connect: ConnectClient, client: Client
 ) -> None:
     """
-    A value that does not fit the type raises TypeError, nothing changes in the broker or in the object.
+    A value that does not fit the type, None among them, raises TypeError, the current value stays
+    in the broker and in the object.
 
     A command to a foreign control is checked the same way.
     """
     device = await client.create_device("dev")
-    controls = [
-        await device.create_control(f"c{index}", control_type)
-        for index, (control_type, _) in enumerate(REFUSED)
-    ]
+    controls = []
+    expected = {}
+    for index, (control_type, _) in enumerate(REFUSED):
+        initial, payload = INITIAL.get(control_type, (None, None))
+        controls.append(await device.create_control(f"c{index}", control_type, value=initial))
+        if payload is not None:
+            expected[f"/devices/dev/controls/c{index}"] = payload
 
     for control, (control_type, value) in zip(controls, REFUSED):
         with pytest.raises(TypeError):
             await control.set_value(value)
-        assert control.value is None, (control_type, value)
+        assert control.value == INITIAL.get(control_type, (None, None))[0], (control_type, value)
     reader = await connect("reader")
     remote = await reader.get_control("dev/c0")
     with pytest.raises(TypeError):
         await remote.set_value("5")
-    assert await read_retained(broker.port, "/devices/dev/controls/+") == {}
+    await wait_retained(broker.port, "/devices/dev/controls/+", expected)
 
 
 async def test_command_to_a_deprecated_number_type_is_a_checked_number(
@@ -274,28 +293,6 @@ async def test_enum_of_the_meta_is_read_only(broker: MosquittoBroker, client: Cl
     }
     meta_topic = "/devices/dev/controls/mode/meta"
     await wait_retained(broker.port, meta_topic, {meta_topic: json.dumps(meta).encode()})
-
-
-@pytest.mark.parametrize("control_type", [ControlType.VALUE, ControlType.SWITCH, ControlType.TEXT])
-async def test_none_is_refused_and_the_value_stays(
-    broker: MosquittoBroker, client: Client, control_type: ControlType
-) -> None:
-    """
-    None is not a value of any type. set_value(None) raises TypeError, the value stays in the object
-    and in the broker.
-    """
-    initial, payload = {
-        ControlType.VALUE: (5, b"5"),
-        ControlType.SWITCH: (True, b"1"),
-        ControlType.TEXT: ("on", b"on"),
-    }[control_type]
-    control = await (await client.create_device("dev")).create_control("c", control_type, value=initial)
-
-    with pytest.raises(TypeError):
-        await control.set_value(None)
-
-    assert control.value == initial
-    await wait_retained(broker.port, "/devices/dev/controls/c", {"/devices/dev/controls/c": payload})
 
 
 async def test_empty_text_erases_the_retained_value_and_stays_empty_locally(

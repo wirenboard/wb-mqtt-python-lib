@@ -89,16 +89,16 @@ async def watch_erasures(connect: ConnectClient, topic_filter: str) -> list[str]
     return erased
 
 
-async def test_device_meta_values_and_order_follow_convention(
+async def test_device_meta_and_control_order_follow_convention(
     broker: MosquittoBroker, client: Client
 ) -> None:
     """
-    The device meta carries the driver and both title languages. Values go out by type, order goes
-    by creation and on from an explicit one.
+    The device meta carries the driver and both title languages. Order goes by creation and on from
+    an explicit one.
     """
     device = await client.create_device("test_dev", title={"en": "Test", "ru": "Тест"})
-    temp = await device.create_control("temp", ControlType.VALUE, precision=0.1, value=21.53)
-    await device.create_control("relay", ControlType.SWITCH, value=True)
+    await device.create_control("temp", ControlType.VALUE)
+    await device.create_control("relay", ControlType.SWITCH)
     await device.create_control("level", ControlType.RANGE, order=10)
     await device.create_control("next", ControlType.VALUE)
 
@@ -108,9 +108,6 @@ async def test_device_meta_values_and_order_follow_convention(
         "driver": "test-service",
         "title": {"en": "Test", "ru": "Тест"},
     }
-    assert retained["/devices/test_dev/controls/temp"] == b"21.5"
-    assert temp.value == 21.53
-    assert retained["/devices/test_dev/controls/relay"] == b"1"
     orders = {
         name: json.loads(retained[f"/devices/test_dev/controls/{name}/meta"])["order"]
         for name in ("temp", "relay", "level", "next")
@@ -230,28 +227,6 @@ async def test_update_meta_changes_fields_on_the_fly(
     await temp.update_meta(title=None)
     retained = await read_retained(broker.port, "/devices/test_dev/controls/temp/meta")
     assert "title" not in json.loads(retained["/devices/test_dev/controls/temp/meta"])
-
-
-async def test_value_is_published_on_change_and_pushbutton_every_time(client: Client) -> None:
-    """
-    A repeated value is not published, a pushbutton press is published every time.
-    """
-    device = await client.create_device("test_dev")
-    level = await device.create_control("level", ControlType.VALUE, value=1)
-    button = await device.create_control("button", ControlType.PUSHBUTTON)
-    published: list[str] = []
-
-    async def collect(message: Message) -> None:
-        published.append(f"{message.topic.rsplit('/', 1)[1]}={message.payload.decode()}")
-
-    await client.raw.subscribe("/devices/test_dev/controls/+", collect)
-    for value in (1, 1, 2, 2):
-        await level.set_value(value)
-    for _ in range(2):
-        await button.set_value(True)
-
-    await wait_until(lambda: len(published) >= 4)
-    assert published == ["level=1", "level=2", "button=1", "button=1"]
 
 
 @pytest.mark.parametrize("sent", ["before the device", "while the device listens"])
@@ -836,7 +811,7 @@ async def test_changes_reach_the_broker_in_the_order_of_the_calls(
     """
     Changes of several tasks go out in the order of the calls, each with its own value, also while
     the erasure of another device holds them between its stages. A press does not overtake a value set
-    before it.
+    before it. A repeated value does not go out, every press does.
     """
     other = await client.create_device("other")
     for name in ("a", "b"):
@@ -859,14 +834,16 @@ async def test_changes_reach_the_broker_in_the_order_of_the_calls(
             other.remove(),
             level.set_value(1),
             level.set_value(2),
+            level.set_value(2),
+            button.set_value(True),
             button.set_value(True),
             level.set_value(3),
         ),
         timeout=5,
     )
 
-    await wait_until(lambda: len(seen) == 4)
-    assert seen == ["level=1", "level=2", "button=1", "level=3"]
+    await wait_until(lambda: len(seen) == 5)
+    assert seen == ["level=1", "level=2", "button=1", "button=1", "level=3"]
 
 
 @pytest.mark.parametrize("offline", [False, True], ids=["online", "offline"])

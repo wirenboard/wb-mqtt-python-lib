@@ -56,11 +56,19 @@ NAME_HOLDERS = pytest.mark.parametrize(
 )
 
 
+async def leave_a_previous_run(connect: ConnectClient) -> None:
+    """
+    Device X with the control «old» that a previous run of the driver «service» left in the broker.
+    """
+    previous_run = await connect("service")
+    await (await previous_run.create_device("X")).create_control("old", ControlType.VALUE, value=1)
+    await previous_run.close()
+
+
 async def test_objects_of_one_control_are_equal_and_see_one_state(driver: Client, client: Client) -> None:
     """
     get_control, device.controls and the argument of a handler give equal objects, a listener works through
-    any. Objects of another client under the same name are not equal. The service does not build
-    the objects itself, the constructors raise.
+    any. Objects of another client under the same name are not equal.
     """
     temp = await (await driver.create_device("dev")).create_control("temp", ControlType.VALUE, value=1)
     first = await client.get_control("dev/temp")
@@ -161,29 +169,6 @@ async def test_create_device_with_force_replaces_a_device_of_another_driver(
     assert device.is_own and list(device.controls) == ["temp"]
 
 
-async def test_create_device_starts_clean_over_leftovers_of_its_own_driver(
-    broker: MosquittoBroker, connect: ConnectClient
-) -> None:
-    """
-    Leftovers of a previous run do not block the name and are erased first.
-
-    A control the service does not create this time does not stay in the broker.
-    """
-    previous_run = await connect("service")
-    old = await previous_run.create_device("X", title="Old")
-    await old.create_control("old", ControlType.VALUE, value=1)
-    await previous_run.close()
-
-    client = await connect("service")
-    device = await client.create_device("X", title="New")
-    await device.create_control("new", ControlType.VALUE, value=2)
-
-    assert list(device.controls) == ["new"]
-    retained = await read_retained(broker.port, "/devices/X/#")
-    assert json.loads(retained["/devices/X/meta"]) == {"driver": "service", "title": {"en": "New"}}
-    assert not [topic for topic in retained if "/controls/old" in topic]
-
-
 @pytest.mark.parametrize(
     "change",
     [
@@ -269,21 +254,6 @@ async def test_control_created_again_over_a_previous_run_starts_clean(
     )
 
 
-async def test_refused_name_is_free_after_the_other_device_is_gone(driver: Client, client: Client) -> None:
-    """
-    create_device refused while another driver held the name works once that device is gone.
-    """
-    other_device = await driver.create_device("X")
-    await other_device.create_control("temp", ControlType.VALUE, value=1)
-    with pytest.raises(DeviceTakenError):
-        await client.create_device("X")
-
-    await other_device.remove()
-
-    device = await wait_or_dump(client.create_device("X"), timeout=5)
-    assert device.is_own and device.meta.driver == "test-service"
-
-
 async def test_objects_follow_a_watched_name_through_every_owner(driver: Client, client: Client) -> None:
     """
     A name the service reads goes from another driver to the service and back. The objects follow it
@@ -298,9 +268,9 @@ async def test_objects_follow_a_watched_name_through_every_owner(driver: Client,
     assert temp.exists and temp.value == 1
     await foreign.remove()
     await wait_until(lambda: not temp.exists)
-    own = await client.create_device("X")
+    own = await wait_or_dump(client.create_device("X"), timeout=5)
     await own.create_control("temp", ControlType.VALUE, value=5)
-    assert temp.is_own and temp.value == 5
+    assert temp.is_own and temp.value == 5 and own.meta.driver == "test-service"
     await own.remove()
     again = await driver.create_device("X")
     await again.create_control("temp", ControlType.VALUE, value=7)
@@ -345,9 +315,7 @@ async def test_create_device_cancelled_while_its_leftovers_are_erased_still_ends
     The caller of create_device is cancelled while the leftovers of a previous run are erased. The device
     still becomes own, published in their place, with its commands subscribed.
     """
-    previous_run = await connect("service")
-    await (await previous_run.create_device("X")).create_control("old", ControlType.VALUE, value=1)
-    await previous_run.close()
+    await leave_a_previous_run(connect)
     client = await connect("service")
     attempt = asyncio.ensure_future(client.create_device("X"))
 
@@ -374,9 +342,7 @@ async def test_create_device_ends_own_when_the_link_drops_while_its_leftovers_ar
     so the device becomes own all the same, for a cancelled caller too. The erasure and the meta go out
     after reconnect.
     """
-    previous_run = await connect("service")
-    await (await previous_run.create_device("X")).create_control("old", ControlType.VALUE, value=1)
-    await previous_run.close()
+    await leave_a_previous_run(connect)
     proxy = DeadLinkProxy(broker.port)
     await proxy.start()
     client = Client("service", proxy.url())
@@ -417,9 +383,7 @@ async def test_two_creates_of_one_name_over_leftovers_make_one_device(
     Two create_device of one name at once over leftovers of a previous run. Both pass the check of the name,
     one takes it after the erasure, the other gets AlreadyCreatedError and does not publish over it.
     """
-    previous_run = await connect("service")
-    await (await previous_run.create_device("X")).create_control("old", ControlType.VALUE, value=1)
-    await previous_run.close()
+    await leave_a_previous_run(connect)
     client = await connect("service")
 
     results = await wait_or_dump(
@@ -474,6 +438,11 @@ async def test_device_created_over_a_foreign_one_gone_unnoticed_starts_clean(
 @pytest.mark.parametrize(
     "leftovers",
     [
+        {
+            "/devices/X/meta": '{"driver": "service", "title": {"en": "Old"}}',
+            "/devices/X/controls/old/meta": '{"type": "value"}',
+            "/devices/X/controls/old": "1",
+        },
         {"/devices/X/controls/a": "1", "/devices/X/controls/a/meta/error": "r"},
         {"/devices/X/meta/name": "Old", "/devices/X/controls/a/meta/type": "value"},
         {"/devices/X/meta": "{broken", "/devices/X/controls/a": "1"},
@@ -490,6 +459,7 @@ async def test_device_created_over_a_foreign_one_gone_unnoticed_starts_clean(
         },
     ],
     ids=[
+        "previous run of the own driver",
         "values without meta",
         "legacy subtopics without a driver",
         "broken JSON meta",
