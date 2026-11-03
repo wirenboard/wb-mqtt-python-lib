@@ -161,6 +161,34 @@ async def test_control_meta_goes_out_by_convention_and_comes_back(
     assert remote.meta == own.meta
 
 
+async def test_error_of_create_control_goes_out_between_the_meta_and_the_value(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    The control has the error at once, on_error gets it with previous NONE, a reader gets it before
+    the value.
+    """
+    device = await client.create_device("dev")
+    errors: list = []
+    device.on_control_error(lambda control, error, previous: errors.append((control.name, error, previous)))
+    watcher = await connect("watcher")
+    seen: list[str] = []
+    await watcher.raw.subscribe("/devices/dev/controls/temp/#", lambda message: seen.append(message.topic))
+
+    temp = await device.create_control("temp", ControlType.VALUE, value=21, error=ControlErrorFlags.READ)
+
+    assert temp.error == ControlErrorFlags.READ
+    await wait_until(lambda: len(seen) == 3 and len(errors) == 1)
+    assert seen == [
+        "/devices/dev/controls/temp/meta",
+        "/devices/dev/controls/temp/meta/error",
+        "/devices/dev/controls/temp",
+    ]
+    assert errors == [("temp", ControlErrorFlags.READ, ControlErrorFlags.NONE)]
+    remote = await watcher.get_control("dev/temp")
+    assert remote.error == ControlErrorFlags.READ and remote.value == 21
+
+
 async def test_update_meta_changes_fields_on_the_fly(
     broker: MosquittoBroker, driver: Client, client: Client, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -673,9 +701,8 @@ async def test_device_error_is_set_cleared_and_erased_before_the_device_meta(
     last_seen = {topic: index for index, (topic, _payload) in enumerate(seen)}
     assert last_seen["/devices/dev/meta/error"] < last_seen["/devices/dev/meta"]
     assert await read_retained(broker.port, "/devices/dev/#") == {}
-    await wait_until(lambda: len(events) == 4)
+    await wait_until(lambda: len(events) == 3)
     assert events == [
-        (ControlErrorFlags.NONE, None),
         (ControlErrorFlags.READ, ControlErrorFlags.NONE),
         (ControlErrorFlags.NONE, ControlErrorFlags.READ),
         (ControlErrorFlags.WRITE, ControlErrorFlags.NONE),

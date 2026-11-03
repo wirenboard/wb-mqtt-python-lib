@@ -250,8 +250,8 @@ async def test_error_of_another_type_is_refused_before_anything_changes(
     broker: MosquittoBroker, client: Client
 ) -> None:
     """
-    set_error of a control or of the device takes only ControlErrorFlags. Anything else raises TypeError
-    before the state changes, nothing is published.
+    set_error of a control or of the device and create_control take only ControlErrorFlags. Anything else
+    raises TypeError before the state changes, nothing is published.
     """
     device = await client.create_device("dev")
     temp = await device.create_control("temp", ControlType.VALUE, value=1)
@@ -261,10 +261,13 @@ async def test_error_of_another_type_is_refused_before_anything_changes(
             await temp.set_error(error)
         with pytest.raises(TypeError):
             await device.set_error(error)
+        with pytest.raises(TypeError):
+            await device.create_control("other", ControlType.VALUE, error=error)
 
     assert temp.error == ControlErrorFlags.NONE and device.error == ControlErrorFlags.NONE
+    assert "other" not in device.controls
     retained = await read_retained(broker.port, "/devices/dev/#")
-    assert not [topic for topic in retained if topic.endswith("/error")]
+    assert not [topic for topic in retained if topic.endswith("/error") or "/other" in topic]
     await temp.set_error(ControlErrorFlags.READ)
     error_topic = "/devices/dev/controls/temp/meta/error"
     await wait_retained(broker.port, error_topic, {error_topic: b"r"})

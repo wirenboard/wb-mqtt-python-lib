@@ -219,8 +219,14 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             self._tasks.start_task(self._unsubscribe_commands_after(name, erasure_done), f"remove {name}")
         )
 
-    async def create_control(  # pylint: disable=too-many-arguments,too-many-locals
-        self, device_name: str, control_name: str, control_type: str, value: Any = None, **meta_fields: Any
+    async def create_control(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
+        self,
+        device_name: str,
+        control_name: str,
+        control_type: str,
+        value: Any = None,
+        error: ControlErrorFlags = ControlErrorFlags.NONE,
+        **meta_fields: Any,
     ) -> None:
         # Checks of the name, the type and the device
         self._raise_if_closed()
@@ -246,7 +252,8 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             fields["order"] = device.next_order
         meta = ControlMeta(control_type=control_type, **fields)
 
-        # Initial value
+        # Initial error and value
+        _check_error_flags(error)
         payload, normalized_value = None, None
         if value is not None:
             if control_type == ControlType.PUSHBUTTON:
@@ -259,11 +266,14 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         self.state.mark_control_added(device_name, control_name, meta)
         control = device.controls[control_name]
         control.topics = control_topics
+        # Meta, error and value in this order, a reader that gets the value knows of the error already
         messages: list[tuple[str, Optional[str]]] = [(control.topics.meta, meta.to_json())]
+        if error:
+            self.state.set_control_error(device_name, control_name, error)
+            messages.append((control.topics.error, error.to_mqtt()))
         if payload is not None:
             control.payload = payload
             self.state.set_control_value(device_name, control_name, normalized_value)
-            # Together with the meta, a reader needs no order between them
             messages.append((control.topics.value, payload))
         await self._wait_for_broker(self._publisher.queue_retained(messages))
 

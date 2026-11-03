@@ -66,8 +66,8 @@ async def test_value_and_error_that_came_before_the_meta_reach_handlers_at_appea
 
     await wait_until(lambda: len(calls) == 3)
     assert sorted(calls, key=str) == [
-        ("control", ControlErrorFlags.READ, None),
-        ("device", ControlErrorFlags.WRITE, None),
+        ("control", ControlErrorFlags.READ, ControlErrorFlags.NONE),
+        ("device", ControlErrorFlags.WRITE, ControlErrorFlags.NONE),
         ("value", 21, None),
     ]
 
@@ -170,7 +170,8 @@ async def test_device_control_error_fires_at_registration_and_control_meta_on_ch
     broker: MosquittoBroker, driver: Client, client: Client
 ) -> None:
     """
-    on_control_error describes every existing control at once, on_control_meta waits for a change.
+    on_control_error describes every existing control with an error at once, on_control_meta waits for
+    a change.
     """
     device = await driver.create_device("dev")
     first = await device.create_control("first", ControlType.VALUE, value=1)
@@ -182,15 +183,14 @@ async def test_device_control_error_fires_at_registration_and_control_meta_on_ch
     errors, metas = [], []
     remote.on_control_error(lambda control, error, previous: errors.append((control.name, error, previous)))
     remote.on_control_meta(lambda control: metas.append((control.name, control.meta.units)))
-    await wait_until(lambda: len(errors) == 2)
+    await wait_until(lambda: len(errors) == 1)
 
     await first.set_error(ControlErrorFlags.WRITE)
     await second.update_meta(units="V")
 
-    await wait_until(lambda: len(errors) == 3 and len(metas) == 1)
+    await wait_until(lambda: len(errors) == 2 and len(metas) == 1)
     assert errors == [
-        ("first", ControlErrorFlags.NONE, None),
-        ("second", ControlErrorFlags.READ, None),
+        ("second", ControlErrorFlags.READ, ControlErrorFlags.NONE),
         ("first", ControlErrorFlags.WRITE, ControlErrorFlags.NONE),
     ]
     assert metas == [("second", "V")]
@@ -274,7 +274,7 @@ async def test_remove_handler_through_any_object_of_the_name(driver: Client, cli
     A handler comes off every event of a control or a device, removed through another object of the same name.
     """
     device = await driver.create_device("dev")
-    level = await device.create_control("level", ControlType.VALUE, value=1)
+    level = await device.create_control("level", ControlType.VALUE, value=1, error=ControlErrorFlags.READ)
     remote = await client.get_control("dev/level")
     remote_device = await client.get_device("dev")
     calls: list = []

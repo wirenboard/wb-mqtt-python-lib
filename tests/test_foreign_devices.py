@@ -570,8 +570,41 @@ async def test_foreign_device_error_follows_the_broker(
     await device.set_error(ControlErrorFlags.NONE)
 
     await wait_until(lambda: len(errors) == 2)
-    assert errors == [(ControlErrorFlags.READ, None), (ControlErrorFlags.NONE, ControlErrorFlags.READ)]
+    assert errors == [
+        (ControlErrorFlags.READ, ControlErrorFlags.NONE),
+        (ControlErrorFlags.NONE, ControlErrorFlags.READ),
+    ]
     assert remote.error == ControlErrorFlags.NONE
+
+
+async def test_error_reads_none_while_the_control_or_the_device_does_not_exist(
+    driver: Client, client: Client
+) -> None:
+    """
+    error reads NONE while the control or the device does not exist. An error that came before the meta
+    shows once the control appears.
+    """
+    control = await client.get_control("dev/temp")
+    device = await client.get_device("dev")
+    await publish_retained(
+        driver,
+        {
+            "/devices/dev/controls/temp/meta/error": "r",
+            "/devices/dev/meta/error": "w",
+            "/devices/dev/meta": '{"driver": "driver"}',
+        },
+    )
+    await wait_until(lambda: device.exists)
+    assert device.error == ControlErrorFlags.WRITE
+    assert not control.exists and control.error == ControlErrorFlags.NONE
+
+    await driver.raw.publish("/devices/dev/controls/temp/meta", '{"type": "value"}', retain=True)
+    await wait_until(lambda: control.exists)
+    assert control.error == ControlErrorFlags.READ
+
+    await publish_retained(driver, {"/devices/dev/controls/temp/meta": "", "/devices/dev/meta": ""})
+    await wait_until(lambda: not device.exists)
+    assert device.error == ControlErrorFlags.NONE and control.error == ControlErrorFlags.NONE
 
 
 @pytest.mark.parametrize(

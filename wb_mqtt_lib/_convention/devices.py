@@ -89,8 +89,11 @@ class Control:  # pylint: disable=too-many-public-methods
 
     @property
     def error(self) -> ControlErrorFlags:
+        """
+        Error of the control, NONE without one and while the control does not exist.
+        """
         record = self._record
-        return record.error if record else ControlErrorFlags.NONE
+        return record.error if record and record.exists else ControlErrorFlags.NONE
 
     def on_added(self, handler: ControlHandler) -> ControlHandler:
         """
@@ -115,9 +118,9 @@ class Control:  # pylint: disable=too-many-public-methods
 
     def on_error(self, handler: ChangeHandler) -> ChangeHandler:
         """
-        handler(control, error, previous) on every change.
+        handler(control, error, previous) on every change, previous is NONE when there was no error.
 
-        Called at once with previous=None if the control exists.
+        Called at once with previous=NONE if the control has an error.
         """
         return self._listen("error", handler)
 
@@ -292,10 +295,11 @@ class Device:  # pylint: disable=too-many-public-methods
     @property
     def error(self) -> ControlErrorFlags:
         """
-        Error of the device itself, NONE without one. homeui marks the card red for any error.
+        Error of the device itself, NONE without one and while the device does not exist. homeui marks
+        the card red for any error.
         """
         record = self._record
-        return record.error if record else ControlErrorFlags.NONE
+        return record.error if record and record.exists else ControlErrorFlags.NONE
 
     @property
     def controls(self) -> dict[str, Control]:
@@ -328,9 +332,10 @@ class Device:  # pylint: disable=too-many-public-methods
 
     def on_error(self, handler: ChangeHandler) -> ChangeHandler:
         """
-        handler(device, error, previous) when the error of the device itself changes.
+        handler(device, error, previous) when the error of the device itself changes, previous is NONE
+        when there was no error.
 
-        Called at once with previous=None if the device exists.
+        Called at once with previous=NONE if the device has an error.
         """
         return self._listen("error", handler)
 
@@ -356,7 +361,7 @@ class Device:  # pylint: disable=too-many-public-methods
         """
         handler(control, error, previous) for any control of the device.
 
-        Called at once for existing controls.
+        Called at once for existing controls with an error.
         """
         return self._listen("control_error", handler)
 
@@ -395,6 +400,7 @@ class Device:  # pylint: disable=too-many-public-methods
         control_type: ControlType,
         title: TitleLike = None,
         value: Any = None,
+        error: ControlErrorFlags = ControlErrorFlags.NONE,
         maximum: Optional[float] = None,
         minimum: Optional[float] = None,
         precision: Optional[float] = None,
@@ -415,6 +421,8 @@ class Device:  # pylint: disable=too-many-public-methods
             control_type: one of the current types of the convention, ControlType.SWITCH and so on.
             title: a string is English, or {"en": ..., "ru": ...}.
             value: initial value, see Control.set_value for the types. A pushbutton takes none.
+            error: initial error, ControlErrorFlags.READ when the first reading failed for example. The meta,
+                the error and the value go out in this order.
             maximum: upper limit of range and value.
             minimum: lower limit of range and value.
             precision: step of a number, a positive number. The MQTT payload keeps as many decimals as
@@ -430,8 +438,9 @@ class Device:  # pylint: disable=too-many-public-methods
             InvalidNameError: the name is invalid.
             AlreadyCreatedError: this client created the control already.
             ValueError: the type, precision, minimum or maximum is invalid.
-            TypeError: the value does not fit the type, or a field has the wrong type, for example units
-                that is not a string, order that is not an int, or a title or enum that is not valid.
+            TypeError: the value does not fit the type, the error is not ControlErrorFlags, or a field has
+                the wrong type, for example units that is not a string, order that is not an int, or a title
+                or enum that is not valid.
             NotOwnError: the device is foreign.
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
@@ -441,6 +450,7 @@ class Device:  # pylint: disable=too-many-public-methods
             name,
             control_type,
             value=value,
+            error=error,
             title=title,
             maximum=maximum,
             minimum=minimum,

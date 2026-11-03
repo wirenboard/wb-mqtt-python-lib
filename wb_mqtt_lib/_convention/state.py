@@ -283,8 +283,8 @@ class State:  # pylint: disable=too-many-public-methods
             initial_calls: list[tuple] = []
             if device.exists and event == "added":
                 initial_calls = [(self._make_device(device_name),)]
-            elif device.exists and event == "error":
-                initial_calls = [(self._make_device(device_name), device.error, None)]
+            elif device.exists and event == "error" and device.error:
+                initial_calls = [(self._make_device(device_name), device.error, ControlErrorFlags.NONE)]
             device.listeners.add_handler(event, handler, initial_calls)
             return
 
@@ -338,7 +338,9 @@ class State:  # pylint: disable=too-many-public-methods
 
         # An error and a value that came before the meta
         if control.error:
-            self._emit_control_event(device_name, control_name, "error", control.error, None)
+            self._emit_control_event(
+                device_name, control_name, "error", control.error, ControlErrorFlags.NONE
+            )
         if control.payload is not None:
             self.set_control_value(device_name, control_name, parse_value(meta, control.payload))
 
@@ -544,8 +546,8 @@ class State:  # pylint: disable=too-many-public-methods
             return [(control_object,)]
         if event == "value" and control.value is not None:
             return [(control_object, control.value, None)]
-        if event == "error":
-            return [(control_object, control.error, None)]
+        if event == "error" and control.error:
+            return [(control_object, control.error, ControlErrorFlags.NONE)]
         return []
 
     def _get_device_state(self, device_name: str) -> _DeviceState:
@@ -574,7 +576,9 @@ class State:  # pylint: disable=too-many-public-methods
         if device.listeners.has_listeners(event):
             device.listeners.emit_event(event, (self._make_device(device_name),))
         if event == "added" and device.error and device.listeners.has_listeners("error"):
-            device.listeners.emit_event("error", (self._make_device(device_name), device.error, None))
+            device.listeners.emit_event(
+                "error", (self._make_device(device_name), device.error, ControlErrorFlags.NONE)
+            )
 
     def _emit_control_event(self, device_name: str, control_name: str, event: str, *details: Any) -> None:
         """
