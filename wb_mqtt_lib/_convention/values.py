@@ -25,9 +25,9 @@ class ControlType(StrEnum):
     """
     Current control types of the convention, the ones an own control is created with.
 
-    A member equals its string, so it compares with the type of a foreign control as is. Deprecated types
-    of foreign controls (temperature, voltage and so on) stay strings, their values are read as numbers
-    like those of value. Unknown types and their values stay strings.
+    A member equals its string, so it compares with the type of a foreign control as is. A foreign control
+    of a deprecated type, temperature or voltage for example, reads as value with the units of its type.
+    Unknown types and their values stay strings.
     """
 
     SWITCH = "switch"
@@ -44,31 +44,27 @@ class ControlType(StrEnum):
 
 _BOOLEAN_TYPES = frozenset({ControlType.SWITCH, ControlType.ALARM, ControlType.WO_SWITCH})
 _NUMBER_TYPES = frozenset({ControlType.VALUE, ControlType.RANGE})
-# Deprecated types of the convention derived from value, as wbgong lists them. wb-rules reads them as numbers.
-_DEPRECATED_NUMBER_TYPES = frozenset(
-    {
-        "temperature",
-        "rel_humidity",
-        "atmospheric_pressure",
-        "rainfall",
-        "wind_speed",
-        "power",
-        "power_consumption",
-        "voltage",
-        "water_flow",
-        "water_consumption",
-        "resistance",
-        "concentration",
-        "pressure",
-        "lux",
-        "sound_level",
-        "heat_power",
-        "heat_energy",
-        "current",
-    }
-)
-# Every type whose value is a number
-_ALL_NUMBER_TYPES = _NUMBER_TYPES | _DEPRECATED_NUMBER_TYPES
+# Deprecated types of the convention derived from value and their units, as the convention and homeui list them
+_DEPRECATED_TYPE_UNITS = {
+    "temperature": "deg C",
+    "rel_humidity": "%, RH",
+    "atmospheric_pressure": "mbar",
+    "rainfall": "mm/h",
+    "wind_speed": "m/s",
+    "power": "W",
+    "power_consumption": "kWh",
+    "voltage": "V",
+    "water_flow": "m^3/h",
+    "water_consumption": "m^3",
+    "resistance": "Ohm",
+    "concentration": "ppm",
+    "heat_power": "Gcal/h",
+    "heat_energy": "Gcal",
+    "current": "A",
+    "pressure": "bar",
+    "lux": "lx",
+    "sound_level": "dB",
+}
 # Integers by the convention, seconds of local time and a 64-bit 1-Wire address
 _INTEGER_TYPES = frozenset({ControlType.LOCAL_TIME, ControlType.W1_ID})
 
@@ -343,11 +339,17 @@ def parse_control_meta(payload: str) -> tuple[Optional[ControlMeta], Optional[Co
     data = _parse_json_object(payload)
     if data is None or not isinstance(data.get("type"), str):
         return None, None
+
+    # A deprecated type reads as value with the units of the type, as homeui shows it. Units of the meta win.
+    control_type, units = data["type"], _str_or_none(data.get("units"))
+    if control_type in _DEPRECATED_TYPE_UNITS:
+        control_type, units = ControlType.VALUE, units or _DEPRECATED_TYPE_UNITS[control_type]
+
     enum = data.get("enum")
     meta = ControlMeta(
-        control_type=data["type"],
+        control_type=control_type,
         title=TranslatedTitle.from_meta(data.get("title")),
-        units=_str_or_none(data.get("units")),
+        units=units,
         precision=_precision_or_none(data.get("precision")),
         minimum=_number_or_none(data.get("min")),
         maximum=_number_or_none(data.get("max")),
@@ -432,10 +434,9 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
     """
     Value of the service turned into the string for the topic and the value the own control keeps.
 
-    switch, alarm and wo-switch take bool, pushbutton takes True. value, range and the deprecated number types
-    of foreign controls, temperature for example, take a finite number, precision rounds only the string.
-    local_time and w1-id take an int. rgb takes three ints from 0 to 255 and keeps them as a tuple. text
-    and an unknown type of a foreign control take a str valid in UTF-8.
+    switch, alarm and wo-switch take bool, pushbutton takes True. value and range take a finite number,
+    precision rounds only the string. local_time and w1-id take an int. rgb takes three ints from 0 to 255
+    and keeps them as a tuple. text and an unknown type of a foreign control take a str valid in UTF-8.
 
     Raises:
         TypeError: the value does not fit the control type.
@@ -451,7 +452,7 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
             raise TypeError("a pushbutton press is set_value(True)")
         return "1", True
 
-    if control_type in _ALL_NUMBER_TYPES:
+    if control_type in _NUMBER_TYPES:
         if not _is_number(value) or not _is_finite(value):
             raise TypeError(f"{control_type} control takes a finite number, got {value!r}")
         return _format_number(value, meta.precision), value
@@ -481,14 +482,13 @@ def parse_value(meta: ControlMeta, payload: str) -> Any:
     """
     String from a topic turned into a value by the control type, as control.value has it.
 
-    A deprecated type derived from value, temperature or voltage for example, gives a number too.
     A string that does not parse stays a string, and so does the value of an unknown type.
     """
     control_type = meta.control_type
     try:
         if control_type in _BOOLEAN_TYPES:
             return float(payload) != 0
-        if control_type in _ALL_NUMBER_TYPES:
+        if control_type in _NUMBER_TYPES:
             return _parse_number(payload)
         if control_type in _INTEGER_TYPES:
             return int(payload)

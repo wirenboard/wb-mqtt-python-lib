@@ -81,6 +81,26 @@ async def test_value_comes_typed_by_meta(
     assert control.exists and control.value == expected
 
 
+@pytest.mark.parametrize(
+    "meta, units",
+    [({"type": "temperature"}, "deg C"), ({"type": "voltage", "units": "mV"}, "mV")],
+    ids=["units of the type", "units of the meta"],
+)
+async def test_deprecated_type_reads_as_value_with_units(
+    driver: Client, client: Client, meta: dict, units: str
+) -> None:
+    """
+    As in homeui, the units of the meta win over those of the type.
+    """
+    base = "/devices/dev/controls/ctl"
+    await publish_retained(driver, {f"{base}/meta": json.dumps(meta), base: "21.5"})
+
+    control = await client.get_control("dev/ctl")
+
+    assert control.meta.control_type == ControlType.VALUE and control.meta.units == units
+    assert control.value == 21.5
+
+
 async def test_command_to_foreign_control_goes_to_on_and_value_follows_driver(
     driver: Client, client: Client
 ) -> None:
