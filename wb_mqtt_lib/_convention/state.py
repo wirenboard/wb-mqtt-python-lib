@@ -399,9 +399,16 @@ class State:  # pylint: disable=too-many-public-methods
         if control is not None and control.is_unused:
             del device.controls[control_name]
 
-    def set_control_value(self, device_name: str, control_name: str, value: Any) -> None:
+    def set_control_value(
+        self, device_name: str, control_name: str, value: Any, notify_unchanged: bool = False
+    ) -> None:
+        """
+        A new value of the control. on_value comes when the value changed, with notify_unchanged also when
+        it is the same.
+        """
         control = self._devices[device_name].controls[control_name]
-        if value == control.value or (_is_nan(value) and _is_nan(control.value)):
+        unchanged = value == control.value or (_is_nan(value) and _is_nan(control.value))
+        if unchanged and not notify_unchanged:
             return
         previous = control.value
         control.value = value

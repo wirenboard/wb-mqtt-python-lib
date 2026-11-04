@@ -21,7 +21,6 @@ from wb_mqtt_lib import (
     ControlErrorFlags,
     ControlType,
     InvalidNameError,
-    Message,
     TranslatedTitle,
 )
 
@@ -95,9 +94,9 @@ REFUSED = [
 
 async def test_value_goes_out_formatted_by_type(broker: MosquittoBroker, client: Client) -> None:
     """
-    Precision rounds the MQTT payload, the own number stays as given. Without precision a number goes out
-    in the shortest digits, without an exponent or trailing .0, as in wb-rules. Other types go out
-    by convention.
+    Precision rounds the MQTT payload, and the own number is the payload read back, as a reader gets it.
+    Without precision a number goes out in the shortest digits, without an exponent or trailing .0,
+    as in wb-rules. Other types go out by convention.
     """
     device = await client.create_device("dev")
     controls = []
@@ -111,8 +110,10 @@ async def test_value_goes_out_formatted_by_type(broker: MosquittoBroker, client:
     for index, (control_type, precision, value, payload) in enumerate(FORMATTED):
         assert retained[f"/devices/dev/controls/c{index}"] == payload, (control_type, precision, value)
         if control_type in (ControlType.VALUE, ControlType.RANGE):
-            assert controls[index].value == value, (control_type, precision, value)
-            assert type(controls[index].value) is type(value)
+            text = payload.decode()
+            read_back = float(text) if "." in text else int(text)
+            assert controls[index].value == read_back, (control_type, precision, value)
+            assert type(controls[index].value) is type(read_back)
         elif control_type == ControlType.RGB:
             assert controls[index].value == tuple(value)
         elif control_type == ControlType.TEXT:
@@ -347,54 +348,29 @@ def test_title_in_a_language_falls_back_to_the_other_one_then_to_the_default(
     assert title.get(lang, "temp") == expected
 
 
-async def test_value_with_precision_changes_locally_also_when_its_payload_stays(
+async def test_value_with_precision_is_rounded_and_every_set_value_goes_out(
     connect: ConnectClient, client: Client
 ) -> None:
     """
-    Precision rounds only the MQTT payload. A new number with the same payload changes control.value
-    and reaches on_value, the payload does not go out again.
+    control.value, on_value and the payload get the number rounded by precision. Every set_value goes out
+    and reaches on_value, also when the rounded number stays.
     """
     device = await client.create_device("precision_dev")
     level = await device.create_control("level", ControlType.VALUE, precision=0.1, value=21.54)
     events: list[tuple[float, Optional[float]]] = []
     level.on_value(lambda _control, value, previous: events.append((value, previous)))
-    await wait_until(lambda: events == [(21.54, None)])
-    assert level.value == 21.54
+    await wait_until(lambda: events == [(21.5, None)])
 
     watcher = await connect("precision-watcher")
-    value_topic = "/devices/precision_dev/controls/level"
-    barrier_topic = "precision-test/barrier"
-    # The first payload is the state at subscription, the rest are publications
     payloads: list[bytes] = []
-    barriers: list[bytes] = []
-
-    async def observe(message: Message) -> None:
-        if message.topic == value_topic:
-            payloads.append(message.payload)
-        else:
-            barriers.append(message.payload)
-
-    await watcher.raw.subscribe(value_topic, observe)
-    await watcher.raw.subscribe(barrier_topic, observe)
+    await watcher.raw.subscribe(
+        "/devices/precision_dev/controls/level", lambda message: payloads.append(message.payload)
+    )
     await wait_until(lambda: payloads == [b"21.5"])
 
-    async def settle(token: bytes) -> None:
-        await client.raw.publish(barrier_topic, token)
-        await wait_until(lambda: barriers[-1:] == [token])
-
     await level.set_value(21.53)
-    await wait_until(lambda: events[-1:] == [(21.53, 21.54)])
-    await settle(b"same-payload")
-    assert level.value == 21.53
-    assert payloads == [b"21.5"]
-
-    await level.set_value(21.53)
-    await settle(b"same-value")
-    assert events == [(21.54, None), (21.53, 21.54)]
-    assert payloads == [b"21.5"]
-
     await level.set_value(21.43)
-    await wait_until(lambda: events[-1:] == [(21.43, 21.53)])
-    await settle(b"changed-payload")
-    assert level.value == 21.43
-    assert payloads == [b"21.5", b"21.4"]
+
+    await wait_until(lambda: payloads == [b"21.5", b"21.5", b"21.4"])
+    await wait_until(lambda: events == [(21.5, None), (21.5, 21.5), (21.4, 21.5)])
+    assert level.value == 21.4

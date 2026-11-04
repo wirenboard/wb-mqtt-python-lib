@@ -109,7 +109,9 @@ class Control:  # pylint: disable=too-many-public-methods
 
     def on_value(self, handler: ChangeHandler) -> ChangeHandler:
         """
-        handler(control, value, previous) on every change in the broker, for pushbutton on every press.
+        handler(control, value, previous) on every set_value of an own control and every value a foreign
+        driver publishes, also the same one, for pushbutton on every press. The same value sent again
+        on resubscription after reconnect is no event.
 
         Called at once with previous=None when the value is known already. A new type of a foreign control
         reads the kept payload again and changes value without this event, only on_meta comes.
@@ -176,9 +178,9 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         Set the value of an own control or send a command to /on of a foreign one.
 
-        An own control publishes the value when it changed and takes it at once, a pushbutton press goes out
-        every time. None erases the value of an own control other than a pushbutton. A foreign control changes
-        when its driver publishes the value.
+        An own control takes the value rounded by precision at once and publishes it on every call, also
+        the same one, a pushbutton press goes out every time. None erases the value of an own control other
+        than a pushbutton. A foreign control changes when its driver publishes the value.
 
         switch, alarm and wo-switch take bool, a pushbutton only True, value and range a finite number,
         local_time and w1-id an int, rgb three ints from 0 to 255, text a non-empty str.

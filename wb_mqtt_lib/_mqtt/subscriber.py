@@ -379,6 +379,16 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         if elapsed > SLOW_DISPATCH_S:
             logger.warning("Dispatching %s took %.2f s", topic, elapsed)
 
+    def is_delivering_retained(self, topic: str, callback: MessageCallback) -> bool:
+        """
+        Whether a subscription of the callback on the topic still gets the retained messages of its SUBSCRIBE,
+        so a retained message on the topic may be one the broker kept and not a live one.
+        """
+        return bool(self._pending_retained) and any(
+            subscription.pending_retained is not None and callback in subscription.callbacks
+            for subscription in self._topic_matcher.iter_match(topic)
+        )
+
     def _dispatch_to(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
         subscription: _Subscription,

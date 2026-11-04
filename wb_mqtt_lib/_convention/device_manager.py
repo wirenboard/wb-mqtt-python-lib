@@ -307,18 +307,15 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
                 self.state.emit_pushbutton_press(device_name, control_name)
             return
 
-        # Own control of another type, the payload goes out only when it changed. None erases the value.
+        # Own control of another type, every call goes out and reaches on_value. None erases the value.
         if value is None:
             payload, normalized_value = None, None
         else:
             payload, normalized_value = to_payload_and_value(control.meta, value)
-        published = None
-        if payload != control.payload:
-            published = self._publisher.put_retained([(control.topics.value, payload)], wait_for_puback=False)
+        published = self._publisher.put_retained([(control.topics.value, payload)], wait_for_puback=False)
         control.payload = payload
-        self.state.set_control_value(device_name, control_name, normalized_value)
-        if published is not None:
-            await self._wait_for_broker(published)
+        self.state.set_control_value(device_name, control_name, normalized_value, notify_unchanged=True)
+        await self._wait_for_broker(published)
 
     async def set_control_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
         _check_error_flags(error)
@@ -444,7 +441,14 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         device = self.state.get_device(topic.device)
         if device is None or device.ownership is Ownership.OWN:
             return
-        _apply_foreign_message(self.state, topic, message.payload.decode("utf-8", "replace"), message.retain)
+        # The same value sent again on resubscription after reconnect is no event, as in wb-rules.
+        # A live repeat is one.
+        resent = message.retain and self._subscriber.is_delivering_retained(
+            message.topic, self._on_device_message
+        )
+        _apply_foreign_message(
+            self.state, topic, message.payload.decode("utf-8", "replace"), message.retain, resent
+        )
 
     def _on_command(self, message: Message) -> None:
         # Commands to own devices only
@@ -710,9 +714,12 @@ def _get_driver_device_names(driver: str, signatures: dict[str, bytes]) -> set[s
     return {name for name in names if _get_device_driver(name, signatures) == driver}
 
 
-def _apply_foreign_message(state: State, topic: topics.ParsedTopic, payload: str, retain: bool) -> None:
+def _apply_foreign_message(
+    state: State, topic: topics.ParsedTopic, payload: str, retain: bool, resent: bool = False
+) -> None:
     """
-    Apply a message of a foreign device to the state. retain is the flag the message was published with.
+    Apply a message of a foreign device to the state. retain is the flag the message was published with,
+    resent marks a retained message that may be one the broker sends again on resubscription.
     """
     # Meta of the device, an empty one clears it
     if topic.kind is topics.TopicKind.DEVICE_META:
@@ -731,7 +738,7 @@ def _apply_foreign_message(state: State, topic: topics.ParsedTopic, payload: str
 
     # Value, meta and error of a control
     if topic.kind is topics.TopicKind.VALUE:
-        _apply_value(state, topic.device, topic.control, payload, retain)
+        _apply_value(state, topic.device, topic.control, payload, retain, resent)
     elif topic.kind is topics.TopicKind.META:
         _apply_control_meta(state, topic.device, topic.control, payload)
     elif topic.kind is topics.TopicKind.ERROR:
@@ -778,7 +785,9 @@ def _apply_control_error(state: State, device_name: str, control_name: str, payl
         state.drop_control_if_unused(device_name, control_name)
 
 
-def _apply_value(state: State, device_name: str, control_name: str, payload: str, retain: bool) -> None:
+def _apply_value(  # pylint: disable=too-many-arguments,too-many-positional-arguments
+    state: State, device_name: str, control_name: str, payload: str, retain: bool, resent: bool
+) -> None:
     # A value may come before the meta, the record of the control keeps it until then
     control = state.get_control(device_name, control_name)
     if control is None:
@@ -796,7 +805,10 @@ def _apply_value(state: State, device_name: str, control_name: str, payload: str
     control.payload = payload or None
     if control.meta is not None:
         state.set_control_value(
-            device_name, control_name, parse_value(control.meta, payload) if payload else None
+            device_name,
+            control_name,
+            parse_value(control.meta, payload) if payload else None,
+            notify_unchanged=not resent,
         )
     elif not payload:
         state.drop_control_if_unused(device_name, control_name)

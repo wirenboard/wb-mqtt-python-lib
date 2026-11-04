@@ -4,7 +4,6 @@ Foreign devices: live objects built from broker messages, appearance, commands, 
 
 import asyncio
 import json
-import math
 from typing import Any
 
 import pytest
@@ -488,20 +487,21 @@ async def test_foreign_meta_numbers_out_of_range_are_dropped(connect: ConnectCli
     assert device.is_own
 
 
-async def test_nan_after_nan_is_no_change(driver: Client, client: Client) -> None:
+async def test_every_live_value_reaches_on_value_also_the_same_one(driver: Client, client: Client) -> None:
     """
-    wb-rules publishes NaN as «NaN». NaN is not equal to itself, still the same NaN again is no new value.
+    on_value of a foreign control gets every value its driver publishes, the same one again too.
+    wb-rules publishes NaN as «NaN», and NaN after NaN comes with NaN in previous.
     """
     await (await driver.create_device("dev")).create_control("level", ControlType.VALUE, value=1)
     level = await client.get_control("dev/level")
-    values: list[float] = []
-    level.on_value(lambda control, value, previous: values.append(value))
+    events: list = []
+    level.on_value(lambda control, value, previous: events.append((value, previous)))
 
-    for payload in ("NaN", "NaN", "2"):
+    for payload in ("NaN", "NaN", "2", "2"):
         await driver.raw.publish("/devices/dev/controls/level", payload, retain=True)
 
-    await wait_until(lambda: len(values) >= 3 and values[-1] == 2)
-    assert len(values) == 3 and values[0] == 1 and math.isnan(values[1])
+    await wait_until(lambda: len(events) == 5)
+    assert str(events) == "[(1, None), (nan, 1), (nan, nan), (2, nan), (2, 2)]"
 
 
 async def test_control_address_without_a_slash_is_refused(client: Client) -> None:

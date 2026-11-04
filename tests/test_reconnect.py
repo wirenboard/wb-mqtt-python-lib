@@ -354,6 +354,34 @@ async def test_retained_command_left_while_offline_is_erased_after_reconnect(
     await wait_until(lambda: commands == [True])
 
 
+async def test_same_foreign_value_sent_again_after_reconnect_is_no_event(
+    driver: Client, dead_link: tuple[DeadLinkProxy, Client]
+) -> None:
+    """
+    After reconnect the broker sends the retained values again. The same value is no event, as in wb-rules,
+    a value changed while the link was down is one. A live value after that is an event, the same one too.
+    """
+    proxy, client = dead_link
+    device = await driver.create_device("dev")
+    same = await device.create_control("same", ControlType.VALUE, value=1)
+    changed = await device.create_control("changed", ControlType.VALUE, value=1)
+    remote = await client.get_device("dev")
+    events: list = []
+    remote.on_control_value(lambda control, value, previous: events.append((control.name, value, previous)))
+    await wait_until(lambda: len(events) == 2)
+    events.clear()
+
+    await proxy.drop(client)
+    await changed.set_value(2)
+    await proxy.restore(client)
+    # The snapshot waits for a marker, and it comes after the retained messages of the resubscription
+    await client.get_device_snapshot("dev")
+    await same.set_value(1)
+
+    await wait_until(lambda: len(events) == 2)
+    assert events == [("changed", 2, 1), ("same", 1, 1)]
+
+
 async def test_raw_subscribe_without_a_link_returns_and_gets_retained_after_reconnect(
     driver: Client, dead_link: tuple[DeadLinkProxy, Client]
 ) -> None:

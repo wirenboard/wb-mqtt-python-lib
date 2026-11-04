@@ -435,9 +435,9 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
     Value of the service turned into the string for the topic and the value the own control keeps.
 
     switch, alarm and wo-switch take bool, pushbutton takes True. value and range take a finite number,
-    precision rounds only the string. local_time and w1-id take an int. rgb takes three ints from 0 to 255
-    and keeps them as a tuple. text and an unknown type of a foreign control take a non-empty str valid
-    in UTF-8.
+    rounded by precision in the string and in the value. local_time and w1-id take an int. rgb takes three
+    ints from 0 to 255 and keeps them as a tuple. text and an unknown type of a foreign control take
+    a non-empty str valid in UTF-8.
 
     Raises:
         TypeError: the value does not fit the control type.
@@ -456,7 +456,9 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
     if control_type in _NUMBER_TYPES:
         if not _is_number(value) or not _is_finite(value):
             raise TypeError(f"{control_type} control takes a finite number, got {value!r}")
-        return _format_number(value, meta.precision), value
+        # The own value is the number the payload reads as, as a reader gets it
+        payload = _format_number(value, meta.precision)
+        return payload, _parse_number(payload)
 
     if control_type in _INTEGER_TYPES:
         if not is_int(value):

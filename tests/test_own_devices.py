@@ -838,7 +838,7 @@ async def test_changes_reach_the_broker_in_the_order_of_the_calls(
     """
     Changes of several tasks go out in the order of the calls, each with its own value, also while
     the erasure of another device holds them between its stages. A press does not overtake a value set
-    before it. A repeated value does not go out, every press does.
+    before it. A repeated value goes out again, as every press does.
     """
     other = await client.create_device("other")
     for name in ("a", "b"):
@@ -869,8 +869,8 @@ async def test_changes_reach_the_broker_in_the_order_of_the_calls(
         timeout=5,
     )
 
-    await wait_until(lambda: len(seen) == 5)
-    assert seen == ["level=1", "level=2", "button=1", "button=1", "level=3"]
+    await wait_until(lambda: len(seen) == 6)
+    assert seen == ["level=1", "level=2", "level=2", "button=1", "button=1", "level=3"]
 
 
 @pytest.mark.parametrize("offline", [False, True], ids=["online", "offline"])
