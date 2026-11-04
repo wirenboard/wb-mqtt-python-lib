@@ -312,8 +312,18 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             payload, normalized_value = None, None
         else:
             payload, normalized_value = to_payload_and_value(control.meta, value)
-        published = self._publisher.put_retained([(control.topics.value, payload)], wait_for_puback=False)
+        # A value is a successful read. As the convention says, r goes away first, then the value goes out.
+        error = control.error
+        if value is not None:
+            error &= ~ControlErrorFlags.READ
+        messages: list[tuple[str, Optional[str]]] = []
+        if error != control.error:
+            messages.append((control.topics.error, error.to_mqtt() or None))
+        messages.append((control.topics.value, payload))
+        published = self._publisher.put_retained(messages, wait_for_puback=False)
+
         control.payload = payload
+        self.state.set_control_error(device_name, control_name, error)
         self.state.set_control_value(device_name, control_name, normalized_value, notify_unchanged=True)
         await self._wait_for_broker(published)
 

@@ -189,6 +189,42 @@ async def test_error_of_create_control_goes_out_between_the_meta_and_the_value(
     assert remote.error == ControlErrorFlags.READ and remote.value == 21
 
 
+async def test_value_clears_the_read_error_before_it_goes_out(connect: ConnectClient, client: Client) -> None:
+    """
+    set_value clears READ and keeps WRITE, the error without r goes out before the value. A value without
+    READ set touches no error, and None erases the value and keeps the error.
+    """
+    device = await client.create_device("dev")
+    temp = await device.create_control(
+        "temp", ControlType.VALUE, value=21, error=ControlErrorFlags.READ | ControlErrorFlags.WRITE
+    )
+    events: list = []
+    temp.on_error(lambda control, error, previous: events.append(("error", error, previous)))
+    temp.on_value(lambda control, value, previous: events.append(("value", value, previous)))
+    watcher = await connect("watcher")
+    seen: list[tuple[str, bytes]] = []
+    await watcher.raw.subscribe(
+        "/devices/dev/controls/temp/#",
+        lambda message: seen.append((message.topic.rsplit("/", 1)[1], message.payload)),
+    )
+    await wait_until(lambda: len(seen) == 3 and len(events) == 2)
+    seen.clear()
+    events.clear()
+
+    await temp.set_value(22)
+    await temp.set_value(23)
+    await temp.set_value(None)
+
+    assert temp.error == ControlErrorFlags.WRITE
+    await wait_until(lambda: len(seen) == 4 and len(events) == 3)
+    assert seen == [("error", b"w"), ("temp", b"22"), ("temp", b"23"), ("temp", b"")]
+    assert sorted(events, key=str) == [
+        ("error", ControlErrorFlags.WRITE, ControlErrorFlags.READ | ControlErrorFlags.WRITE),
+        ("value", 22, 21),
+        ("value", 23, 22),
+    ]
+
+
 async def test_update_meta_changes_fields_on_the_fly(
     broker: MosquittoBroker, driver: Client, client: Client, monkeypatch: pytest.MonkeyPatch
 ) -> None:

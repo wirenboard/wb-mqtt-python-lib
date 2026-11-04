@@ -179,8 +179,9 @@ class Control:  # pylint: disable=too-many-public-methods
         Set the value of an own control or send a command to /on of a foreign one.
 
         An own control takes the value rounded by precision at once and publishes it on every call, also
-        the same one, a pushbutton press goes out every time. None erases the value of an own control other
-        than a pushbutton. A foreign control changes when its driver publishes the value.
+        the same one, a pushbutton press goes out every time. A value clears the READ flag of the error first,
+        WRITE and POLL stay. None erases the value of an own control other than a pushbutton and keeps
+        the error. A foreign control changes when its driver publishes the value.
 
         switch, alarm and wo-switch take bool, a pushbutton only True, value and range a finite number,
         local_time and w1-id an int, rgb three ints from 0 to 255, text a non-empty str.
@@ -203,6 +204,7 @@ class Control:  # pylint: disable=too-many-public-methods
     async def set_error(self, error: ControlErrorFlags) -> None:
         """
         Only for an own control. Set or clear the error. Returns without waiting for the broker, as set_value.
+        set_value clears READ itself.
 
         Raises:
             TypeError: the error is not ControlErrorFlags.
