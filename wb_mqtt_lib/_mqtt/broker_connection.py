@@ -16,6 +16,7 @@ aiomqtt does not end the waits for PUBACK when the connection drops, they end by
 """
 
 import logging
+from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 import aiomqtt
@@ -44,9 +45,25 @@ PENDING_CALLS_WARNING = 10_000
 # MQTT reason codes of a rejected login, a bad user name or password and not authorized
 _LOGIN_REJECTED_CODES = (134, 135)
 
-# Called for every message from the broker with its topic, payload, retain flag as published, QoS and
-# the numbers of the subscriptions it came for, None when the broker sent none
-PacketHandler = Callable[[str, bytes, bool, int, Optional[list[int]]], None]
+
+@dataclass(frozen=True)
+class Message:
+    """
+    Message from the broker.
+
+    retain is the flag the message was published with. It is True for what the broker keeps and sends
+    on subscription, and for a live message published retained, an empty one erases the topic.
+    """
+
+    topic: str
+    payload: bytes
+    retain: bool
+    qos: int
+
+
+# Called for every message from the broker with the numbers of the subscriptions it came for,
+# None when the broker sent none
+PacketHandler = Callable[[Message, Optional[list[int]]], None]
 
 _logger = get_logger(f"{__name__}.aiomqtt")
 
@@ -203,10 +220,7 @@ class Connection:
                 if not isinstance(payload, (bytes, bytearray)):
                     payload = b"" if payload is None else str(payload).encode()
                 handle_message(
-                    message.topic.value,
-                    bytes(payload),
-                    message.retain,
-                    message.qos,
+                    Message(message.topic.value, bytes(payload), message.retain, message.qos),
                     getattr(message.properties, "SubscriptionIdentifier", None),
                 )
         except aiomqtt.MqttError as error:

@@ -10,7 +10,7 @@ After reconnect a new session queues the whole mirror again, the broker on the c
 import asyncio
 from collections import deque
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import NamedTuple, Optional, Sequence
 
 from .._errors import BrokerDisconnectedError, ClientClosedError
 from .._logs import get_logger
@@ -19,9 +19,23 @@ from . import broker_connection, checks
 
 logger = get_logger(__name__)
 
+# QoS of the publications of the library, the broker confirms each of them
+PUBLICATION_QOS = 1
+
+
+class _Message(NamedTuple):
+    """
+    One message for Publisher._put. A later stage of an erasure goes out after the broker confirmed
+    the earlier one.
+    """
+
+    topic: str
+    payload: checks.Payload
+    stage: int = 0
+
 
 @dataclass(frozen=True)
-class _MirrorEntry:
+class _MirrorRecord:
     payload: checks.Payload
     qos: int
     # Stage of an erasure, a later stage goes out after the broker confirmed the earlier one
@@ -65,9 +79,9 @@ class _Publication:  # pylint: disable=too-many-instance-attributes
     payload: checks.Payload
     qos: int
     retain: bool
-    # The mirror entry a retained publication carries. One whose entry is no longer the current one
+    # The mirror record a retained publication carries. One whose record is no longer the current one
     # of its topic is out of date, a newer change has a publication of its own further back in the queue.
-    mirror_entry: Optional[_MirrorEntry] = None
+    mirror_record: Optional[_MirrorRecord] = None
     batch: Optional[_Batch] = None
     # Queued by the replay after reconnect, skipped when a newer change overtook it
     replay: bool = False
@@ -119,7 +133,7 @@ class Publisher:
 
     def __init__(self) -> None:
         self._session: Optional[_Session] = None
-        self._mirror: dict[str, _MirrorEntry] = {}
+        self._mirror: dict[str, _MirrorRecord] = {}
         # Send tasks of the session that ended, cancelled and not finished yet
         self._ended_session_tasks: list[asyncio.Task] = []
         # _send_queued runs, a call from inside it returns at once
@@ -177,7 +191,7 @@ class Publisher:
     # ------------------------------------------------------------
 
     async def publish(
-        self, topic: str, payload: checks.Payload = None, qos: int = 1, retain: bool = False
+        self, topic: str, payload: checks.Payload = None, qos: int = PUBLICATION_QOS, retain: bool = False
     ) -> None:
         """
         Publish a message and return once the broker confirmed it.
@@ -202,7 +216,7 @@ class Publisher:
         if isinstance(payload, bytearray):
             # A buffer the service changes later must not change what goes out after reconnect
             payload = bytes(payload)
-        await asyncio.shield(self._put([(topic, payload, 0)], qos, retain, wait_for_puback=True))
+        await asyncio.shield(self._put([_Message(topic, payload)], qos, retain=retain, wait_for_puback=True))
 
     def put_event(self, topic: str, payload: checks.Payload) -> asyncio.Future:
         """
@@ -218,7 +232,7 @@ class Publisher:
             BrokerDisconnectedError: the link is down.
             Exception: an unexpected error of paho or aiomqtt on the way to paho, as it is.
         """
-        return self._put([(topic, payload, 0)], 1, False, wait_for_puback=True)
+        return self._put([_Message(topic, payload)], PUBLICATION_QOS, retain=False, wait_for_puback=True)
 
     def put_retained(
         self, messages: Sequence[tuple[str, checks.Payload]], *, wait_for_puback: bool = True
@@ -238,7 +252,12 @@ class Publisher:
             Exception: an unexpected error of paho or aiomqtt on the way to paho, as it is. The mirror gets
                 back what it had before the call, and what paho sent already gets the old payload again.
         """
-        return self._put([(topic, payload, 0) for topic, payload in messages], 1, True, wait_for_puback)
+        return self._put(
+            [_Message(topic, payload) for topic, payload in messages],
+            PUBLICATION_QOS,
+            retain=True,
+            wait_for_puback=wait_for_puback,
+        )
 
     def put_erasure(self, staged: Sequence[tuple[str, int]]) -> asyncio.Future:
         """
@@ -248,7 +267,12 @@ class Publisher:
         the broker confirmed everything queued before it, also after reconnect. So only an error of paho on
         the first stage reaches the caller, a later one is only logged.
         """
-        return self._put([(topic, None, stage) for topic, stage in staged], 1, True, wait_for_puback=True)
+        return self._put(
+            [_Message(topic, None, stage) for topic, stage in staged],
+            PUBLICATION_QOS,
+            retain=True,
+            wait_for_puback=True,
+        )
 
     # ------------------------------------------------------------
     # Own retained state in the mirror
@@ -261,26 +285,26 @@ class Publisher:
         prefix = f"{topic}/"
         return [
             own_topic
-            for own_topic, mirror_entry in self._mirror.items()
-            if mirror_entry.payload is not None and (own_topic == topic or own_topic.startswith(prefix))
+            for own_topic, mirror_record in self._mirror.items()
+            if mirror_record.payload is not None and (own_topic == topic or own_topic.startswith(prefix))
         ]
 
-    def _put_in_mirror(self, topic: str, payload: checks.Payload, qos: int, stage: int = 0) -> _MirrorEntry:
-        current_entry = self._mirror.get(topic)
-        if current_entry is None or current_entry.payload is None or payload is None:
+    def _put_in_mirror(self, topic: str, payload: checks.Payload, qos: int, stage: int = 0) -> _MirrorRecord:
+        current_record = self._mirror.get(topic)
+        if current_record is None or current_record.payload is None or payload is None:
             # Appearing again and erasing go to the end. The replay keeps the order the state was built in,
             # and erases in the stages the erasure was made in.
             self._mirror.pop(topic, None)
-        mirror_entry = _MirrorEntry(payload, qos, stage)
-        self._mirror[topic] = mirror_entry
-        return mirror_entry
+        mirror_record = _MirrorRecord(payload, qos, stage)
+        self._mirror[topic] = mirror_record
+        return mirror_record
 
-    def _forget_confirmed_erasure(self, topic: str, mirror_entry: Optional[_MirrorEntry]) -> None:
+    def _forget_confirmed_erasure(self, topic: str, mirror_record: Optional[_MirrorRecord]) -> None:
         # An erasure that reached the broker needs no replay. Keeping it would grow the mirror forever.
         if (
-            mirror_entry is not None
-            and mirror_entry.payload is None
-            and self._mirror.get(topic) is mirror_entry
+            mirror_record is not None
+            and mirror_record.payload is None
+            and self._mirror.get(topic) is mirror_record
         ):
             del self._mirror[topic]
 
@@ -290,19 +314,19 @@ class Publisher:
 
     def _put(  # pylint: disable=too-many-locals
         self,
-        messages: Sequence[tuple[str, checks.Payload, int]],
+        messages: Sequence[_Message],
         qos: int,
         retain: bool,
         wait_for_puback: bool,
     ) -> asyncio.Future:
         """
-        Put messages (topic, payload, stage) into the mirror, when they are retained, and into the queue
+        Put messages into the mirror, when they are retained, and into the queue
         in the order given, with a barrier where the stage changes. The queue hands them to paho while
         the window has room. An error of paho on a message takes the whole call back and comes as it is.
         """
         session = self._session
         if session is None and not retain:
-            raise BrokerDisconnectedError(f"broker is not connected, {messages[0][0]} is not published")
+            raise BrokerDisconnectedError(f"broker is not connected, {messages[0].topic} is not published")
 
         # Messages without wait_for_puback that paho takes at once have nothing to wait for
         at_once = (
@@ -312,48 +336,52 @@ class Publisher:
             and session.inflight + len(messages) <= broker_connection.SEND_WINDOW
         )
         batch = None if at_once else _Batch(len(messages) if session is not None else 0)
-        # The mirror entry of every topic as it was before the call, for _take_back
-        previous_entries: list[tuple[str, Optional[_MirrorEntry]]] = []
+        # The mirror record of every topic as it was before the call, for _take_back
+        previous_records: list[tuple[str, Optional[_MirrorRecord]]] = []
         previous_stage = None
         for topic, payload, stage in messages:
             if payload in ("", b""):
                 # An empty payload erases a retained message, the mirror keeps erasures as None
                 payload = None
-            mirror_entry = None
+            mirror_record = None
             if retain:
-                previous_entries.append((topic, self._mirror.get(topic)))
-                mirror_entry = self._put_in_mirror(topic, payload, qos, stage)
+                previous_records.append((topic, self._mirror.get(topic)))
+                mirror_record = self._put_in_mirror(topic, payload, qos, stage)
             if session is None:
                 continue
             if previous_stage is not None and stage != previous_stage:
                 session.queue.append(_BARRIER)
             previous_stage = stage
-            publication = _Publication(topic, payload, qos, retain, mirror_entry, batch)
+            publication = _Publication(
+                topic, payload, qos, retain=retain, mirror_record=mirror_record, batch=batch
+            )
             session.queue.append(publication)
             # The send task starts at once and hands the packet to paho while the window has room
             self._send_queued(session)
             if publication.error is not None:
-                self._take_back(session, previous_entries, qos)
+                self._take_back(session, previous_records, qos)
                 raise publication.error
         # A future that is done already does not hold the caller
         return (batch or _Batch(0)).future
 
     def _take_back(
-        self, session: _Session, previous_entries: list[tuple[str, Optional[_MirrorEntry]]], qos: int
+        self, session: _Session, previous_records: list[tuple[str, Optional[_MirrorRecord]]], qos: int
     ) -> None:
         """
         Undo a call whose last message failed on the way to paho. The mirror gets back what it had before
         the call. paho has sent the messages before the failed one, so their topics get the old payload again,
         or an erasure where there was none.
         """
-        for topic, previous_entry in previous_entries:
-            if previous_entry is None:
+        for topic, previous_record in previous_records:
+            if previous_record is None:
                 self._mirror.pop(topic, None)
             else:
-                self._mirror[topic] = previous_entry
-        for topic, previous_entry in reversed(previous_entries[:-1]):
-            payload = previous_entry.payload if previous_entry is not None else None
-            session.queue.append(_Publication(topic, payload, qos, True, previous_entry))
+                self._mirror[topic] = previous_record
+        for topic, previous_record in reversed(previous_records[:-1]):
+            payload = previous_record.payload if previous_record is not None else None
+            session.queue.append(
+                _Publication(topic, payload, qos, retain=True, mirror_record=previous_record)
+            )
         self._send_queued(session)
 
     def _queue_replay(self, session: _Session) -> None:
@@ -364,16 +392,23 @@ class Publisher:
         a publication of its own further back in the queue.
         """
         erasure_stage = None
-        for topic, mirror_entry in self._mirror.items():
+        for topic, mirror_record in self._mirror.items():
             # A barrier where the stage of the erasures that go in a row grows
-            if mirror_entry.payload is None:
-                if erasure_stage is not None and mirror_entry.stage > erasure_stage:
+            if mirror_record.payload is None:
+                if erasure_stage is not None and mirror_record.stage > erasure_stage:
                     session.queue.append(_BARRIER)
-                erasure_stage = mirror_entry.stage
+                erasure_stage = mirror_record.stage
             else:
                 erasure_stage = None
             session.queue.append(
-                _Publication(topic, mirror_entry.payload, mirror_entry.qos, True, mirror_entry, replay=True)
+                _Publication(
+                    topic,
+                    mirror_record.payload,
+                    mirror_record.qos,
+                    retain=True,
+                    mirror_record=mirror_record,
+                    replay=True,
+                )
             )
         self._send_queued(session)
 
@@ -416,7 +451,10 @@ class Publisher:
         try:
             while True:
                 # A replayed publication that a newer change overtook does not go out
-                if publication.replay and self._mirror.get(publication.topic) is not publication.mirror_entry:
+                if (
+                    publication.replay
+                    and self._mirror.get(publication.topic) is not publication.mirror_record
+                ):
                     return
 
                 try:
@@ -434,7 +472,7 @@ class Publisher:
                     if (
                         not isinstance(error, broker_connection.AckTimeout)
                         or session is not self._session
-                        or self._mirror.get(publication.topic) is not publication.mirror_entry
+                        or self._mirror.get(publication.topic) is not publication.mirror_record
                     ):
                         logger.debug(
                             "Retained publish to %s left to the replay: %s", publication.topic, error
@@ -445,7 +483,7 @@ class Publisher:
 
                 # Confirmed
                 if publication.retain:
-                    self._forget_confirmed_erasure(publication.topic, publication.mirror_entry)
+                    self._forget_confirmed_erasure(publication.topic, publication.mirror_record)
                 return
         except asyncio.CancelledError:
             # The session ended
@@ -456,7 +494,7 @@ class Publisher:
             # repeat it. The caller of _put gets the error at once, and a later one fails a waiting event.
             logger.exception("Publishing to %s failed", publication.topic)
             publication.error = error
-            if publication.retain and self._mirror.get(publication.topic) is publication.mirror_entry:
+            if publication.retain and self._mirror.get(publication.topic) is publication.mirror_record:
                 del self._mirror[publication.topic]
             if not publication.retain:
                 publication.fail(error)
@@ -471,7 +509,7 @@ class Publisher:
         fails. After mark_closing there is no replay, and everything fails.
         """
         if self._closing:
-            publication.fail(ClientClosedError("the client is closed"))
+            publication.fail(ClientClosedError())
         elif publication.retain:
             publication.finish()
         else:

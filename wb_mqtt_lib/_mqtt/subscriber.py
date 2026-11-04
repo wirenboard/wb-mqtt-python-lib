@@ -18,12 +18,16 @@ from .._errors import BrokerDisconnectedError, ClientClosedError
 from .._logs import get_logger
 from .._tasks import retrieve_error
 from . import broker_connection, checks
+from .broker_connection import Message
 
 logger = get_logger(__name__)
 
 # As wb-rules subscribes. A clean session never gets an unacknowledged message again (MQTT 5, 4.4),
 # so QoS 1 would add a PUBACK per message and no delivery guarantee.
 SUBSCRIPTION_QOS = 0
+# Markers go and come with QoS 1, a QoS 0 marker would pass QoS 1 messages of raw subscriptions the broker
+# still queues
+MARKER_QOS = 1
 # A broker answers in milliseconds, the end of retained delivery waits longer only on a stalled link
 RETAINED_END_TIMEOUT_S = 30.0
 # Dispatching one message longer than this goes to the log, callbacks must not block
@@ -31,21 +35,8 @@ SLOW_DISPATCH_S = 0.1
 # The largest Subscription Identifier of MQTT 5. paho refuses a larger one in every SUBSCRIBE it packs.
 MAX_SUBSCRIPTION_NUMBER = 268_435_455
 _MARKER_ROOT = "/wbretainhack/"
-
-
-@dataclass(frozen=True)
-class Message:
-    """
-    Message from the broker.
-
-    retain is the flag the message was published with. It is True for what the broker keeps and sends
-    on subscription, and for a live message published retained, an empty one erases the topic.
-    """
-
-    topic: str
-    payload: bytes
-    retain: bool
-    qos: int
+# Only the number in the topic of a marker matters, the payload names it for anyone who sees it in the broker
+_MARKER_PAYLOAD = "marker"
 
 
 # A callback of a subscription, it takes a Message and returns nothing
@@ -110,22 +101,19 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         Subscribe again after (re)connect, the broker drops subscriptions with a clean session.
 
         The retained messages come to every callback again, publish_resubscription_marker ends them.
-        The SUBACK of a subscription comes after the retained messages of the ones before it, a late one
-        is no lost link.
 
         Raises:
             LinkLost: the connection is broken.
         """
         async with self._lock:
             self._connection = connection
-            # QoS 1, a QoS 0 marker would pass QoS 1 messages of raw subscriptions the broker still queues
-            await connection.subscribe(f"{self._marker_prefix}+", 1)
+            await connection.subscribe(f"{self._marker_prefix}+", MARKER_QOS)
             # In the order of numbers. A callback takes a live message from its oldest subscription,
             # that one must be at the broker first.
             subscriptions = sorted(self._subscriptions.items(), key=lambda item: item[1].number)
             await asyncio.gather(
                 *(
-                    self._send_subscribe(topic_filter, subscription, late_ack_ok=True)
+                    self._send_subscribe(topic_filter, subscription)
                     for topic_filter, subscription in subscriptions
                 )
             )
@@ -168,7 +156,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         """
         End every wait for the broker with ClientClosedError.
         """
-        self._fail_marker_waits(ClientClosedError("the client is closed"))
+        self._fail_marker_waits(ClientClosedError())
 
     # ------------------------------------------------------------
     # Subscriptions and reads
@@ -213,7 +201,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
                         if self._connected:
                             try:
                                 await self._send_subscribe(topic_filter, subscription)
-                            except broker_connection.LinkError as error:
+                            except broker_connection.LinkLost as error:
                                 # Restored by connection_restored after reconnect
                                 logger.debug("Subscription to %s deferred: %s", topic_filter, error)
                     elif callback not in subscription.callbacks:
@@ -222,10 +210,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
                     retained_arriving = retained_arriving or subscription.pending_retained is not None
 
             # close() may have begun while the call waited for the lock or a SUBACK
-            if self._closing:
-                raise ClientClosedError("the client is closed")
-            if not self._connected:
-                raise BrokerDisconnectedError("the broker link is down")
+            self._raise_if_unavailable()
             if retained_arriving:
                 await self.wait_retained_end()
 
@@ -289,10 +274,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
                 in RETAINED_END_TIMEOUT_S.
             ClientClosedError: the client closes.
         """
-        if self._closing:
-            raise ClientClosedError("the client is closed")
-        if not self._connected:
-            raise BrokerDisconnectedError("the broker link is down")
+        self._raise_if_unavailable()
 
         # A marker after the retained messages, its arrival ends the wait
         loop = asyncio.get_running_loop()
@@ -349,14 +331,13 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
     # Messages from the broker
     # ------------------------------------------------------------
 
-    def dispatch(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        self, topic: str, payload: bytes, retain: bool, qos: int, numbers: Optional[list[int]]
-    ) -> None:
+    def dispatch(self, message: Message, numbers: Optional[list[int]]) -> None:
         """
         Hand a message from the broker to the callbacks of the subscriptions it came for, once per callback.
 
-        retain is the flag the message was published with, numbers are the subscriptions it came for.
+        numbers are the subscriptions it came for.
         """
+        topic = message.topic
         if topic.startswith(self._marker_prefix):
             self._marker_arrived(topic)
             return
@@ -373,7 +354,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
             subscriptions = list(self._topic_matcher.iter_match(topic))
         matching: list[_Subscription] = []
         for subscription in subscriptions:
-            self._dispatch_to(subscription, topic, payload, retain, qos, matching)
+            self._dispatch_to(subscription, message, matching)
 
         elapsed = time.monotonic() - started
         if elapsed > SLOW_DISPATCH_S:
@@ -389,29 +370,20 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
             for subscription in self._topic_matcher.iter_match(topic)
         )
 
-    def _dispatch_to(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-        self,
-        subscription: _Subscription,
-        topic: str,
-        payload: bytes,
-        retain: bool,
-        qos: int,
-        matching: list[_Subscription],
+    def _dispatch_to(
+        self, subscription: _Subscription, message: Message, matching: list[_Subscription]
     ) -> None:
         """
         Hand a message to the callbacks of the subscription.
-
-        retain is the flag the message was published with.
         """
         # What the broker keeps. On subscription it never sends an empty payload, so that is a live erasure.
-        if retain and payload:
-            subscription.retained[topic] = payload
-        elif retain:
-            subscription.retained.pop(topic, None)
+        if message.retain and message.payload:
+            subscription.retained[message.topic] = message.payload
+        elif message.retain:
+            subscription.retained.pop(message.topic, None)
 
-        message = Message(topic, payload, retain, qos)
         for callback in list(subscription.callbacks):
-            if self._is_source_subscription(callback, subscription, topic, matching):
+            if self._is_source_subscription(callback, subscription, message.topic, matching):
                 self._call_safely(callback, message)
 
     def _is_source_subscription(
@@ -500,18 +472,34 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
                 continue
             self._call_safely(callback, Message(topic, payload, True, subscription.qos))
 
-    async def _send_subscribe(
-        self, topic_filter: str, subscription: _Subscription, late_ack_ok: bool = False
-    ) -> None:
+    async def _send_subscribe(self, topic_filter: str, subscription: _Subscription) -> None:
+        """
+        Send SUBSCRIBE and wait for SUBACK. A late SUBACK is no lost link, the broker sends it after
+        the retained messages of the subscriptions before, and the marker tells when they end.
+
+        Raises:
+            LinkLost: the connection is broken.
+        """
         # Nothing awaits between the number and the packet, so the numbers follow the packets
         subscription.pending_retained = next(self._packet_numbers)
         self._pending_retained.add(subscription)
         try:
             await self._connection.subscribe(topic_filter, subscription.qos, subscription.number)
         except broker_connection.AckTimeout as error:
-            if not late_ack_ok:
-                raise
             logger.debug("SUBACK for %s is late: %s", topic_filter, error)
+
+    def _raise_if_unavailable(self) -> None:
+        """
+        Raise when a call cannot reach the broker.
+
+        Raises:
+            ClientClosedError: the client is closing.
+            BrokerDisconnectedError: the link is down.
+        """
+        if self._closing:
+            raise ClientClosedError()
+        if not self._connected:
+            raise BrokerDisconnectedError("the broker link is down")
 
     async def _publish_marker(self, marker_number: int) -> None:
         """
@@ -522,7 +510,9 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
             LinkLost: the connection is broken.
         """
         try:
-            await self._connection.publish(self._get_marker_topic(marker_number), "2", 1, False)
+            await self._connection.publish(
+                self._get_marker_topic(marker_number), _MARKER_PAYLOAD, MARKER_QOS, retain=False
+            )
         except broker_connection.AckTimeout as error:
             logger.debug("PUBACK of marker %d is late: %s", marker_number, error)
 

@@ -3,6 +3,7 @@ client.raw, for MQTT topics outside the Wiren Board convention.
 """
 
 import asyncio
+from dataclasses import dataclass, field
 from typing import Callable
 
 from .._errors import BrokerDisconnectedError, ClientClosedError
@@ -15,8 +16,18 @@ from .._listeners import (
     get_handler_name,
 )
 from .checks import Payload
-from .publisher import Publisher
+from .publisher import PUBLICATION_QOS, Publisher
 from .subscriber import SUBSCRIPTION_QOS, Subscriber
+
+
+@dataclass(eq=False)
+class _HandlerRecord:
+    """
+    The listener of a raw handler and the filters it listens to.
+    """
+
+    listener: Listener
+    filters: list[str] = field(default_factory=list)
 
 
 class RawTopics:
@@ -39,8 +50,7 @@ class RawTopics:
         self._publisher = publisher
         self._listener_registry = listener_registry
         self._is_closed = is_closed
-        # The listener of a handler and the filters it listens to
-        self._handlers: dict[Handler, tuple[Listener, list[str]]] = {}
+        self._handlers: dict[Handler, _HandlerRecord] = {}
 
     async def subscribe(
         self, topic_filter: str, handler: MessageHandler, qos: int = SUBSCRIPTION_QOS
@@ -71,24 +81,23 @@ class RawTopics:
         check_handler_arguments(handler, 1, "raw")
         if handler not in self._handlers:
             listener = self._listener_registry.create_listener(handler, f"raw {get_handler_name(handler)}")
-            self._handlers[handler] = (listener, [])
-        entry = self._handlers[handler]
-        listener, filters = entry
-        added = topic_filter not in filters
+            self._handlers[handler] = _HandlerRecord(listener)
+        record = self._handlers[handler]
+        added = topic_filter not in record.filters
         if added:
-            filters.append(topic_filter)
+            record.filters.append(topic_filter)
         try:
             # One bound method per listener, the subscriber calls it once even when filters overlap.
             # A repeated call waits there for the retained messages of the first one.
-            await self._subscriber.subscribe([topic_filter], listener.queue_message, qos)
+            await self._subscriber.subscribe([topic_filter], record.listener.queue_message, qos)
         except BrokerDisconnectedError:
             # Subscribed all the same, the retained messages come after reconnect
             pass
         except BaseException:
             if added:
-                filters.remove(topic_filter)
+                record.filters.remove(topic_filter)
                 # unsubscribe may have taken the handler off meanwhile, another call may have added it again
-                if not filters and self._handlers.get(handler) is entry:
+                if not record.filters and self._handlers.get(handler) is record:
                     self._stop_listener(handler)
             raise
         return handler
@@ -104,9 +113,9 @@ class RawTopics:
         """
         if handler not in self._handlers:
             return
-        listener, filters = self._stop_listener(handler)
+        record = self._stop_listener(handler)
         # A cancelled call still takes the stopped listener off every filter
-        await asyncio.shield(self._unsubscribe_filters(listener, filters))
+        await asyncio.shield(self._unsubscribe_filters(record))
 
     async def read(self, topic_filter: str) -> dict[str, bytes]:
         """
@@ -124,7 +133,9 @@ class RawTopics:
         self._raise_if_closed()
         return await self._subscriber.read_retained([topic_filter])
 
-    async def publish(self, topic: str, payload: Payload, qos: int = 1, retain: bool = False) -> None:
+    async def publish(
+        self, topic: str, payload: Payload, qos: int = PUBLICATION_QOS, retain: bool = False
+    ) -> None:
         """
         Publish a message. The arguments go in the order of paho and aiomqtt.
 
@@ -143,15 +154,15 @@ class RawTopics:
         self._raise_if_closed()
         await self._publisher.publish(topic, payload, qos=qos, retain=retain)
 
-    async def _unsubscribe_filters(self, listener: Listener, filters: list[str]) -> None:
-        for topic_filter in filters:
-            await self._subscriber.unsubscribe(topic_filter, listener.queue_message)
+    async def _unsubscribe_filters(self, record: _HandlerRecord) -> None:
+        for topic_filter in record.filters:
+            await self._subscriber.unsubscribe(topic_filter, record.listener.queue_message)
 
-    def _stop_listener(self, handler: Handler) -> tuple[Listener, list[str]]:
-        listener, filters = self._handlers.pop(handler)
-        listener.stop()
-        return listener, filters
+    def _stop_listener(self, handler: Handler) -> _HandlerRecord:
+        record = self._handlers.pop(handler)
+        record.listener.stop()
+        return record
 
     def _raise_if_closed(self) -> None:
         if self._is_closed():
-            raise ClientClosedError("the client is closed")
+            raise ClientClosedError()

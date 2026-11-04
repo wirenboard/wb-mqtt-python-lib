@@ -25,8 +25,8 @@ from ._errors import (
     NotOwnError,
     ReadonlyControlError,
 )
+from ._mqtt.broker_connection import Message
 from ._mqtt.broker_url import DEFAULT_BROKER_URL
-from ._mqtt.subscriber import Message
 
 __all__ = [
     "DEFAULT_BROKER_URL",

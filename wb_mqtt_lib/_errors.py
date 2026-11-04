@@ -48,6 +48,9 @@ class ClientClosedError(MqttLibError):
     The client is closed. Fields still read, writing, waiting and new listeners do not work.
     """
 
+    def __init__(self, message: str = "the client is closed") -> None:
+        super().__init__(message)
+
 
 class DeviceTakenError(MqttLibError, ValueError):
     """

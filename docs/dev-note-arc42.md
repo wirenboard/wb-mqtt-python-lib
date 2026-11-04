@@ -140,12 +140,12 @@ wb_mqtt_lib/
 ├── _logs.py                 # get_logger, логгеры модулей, log_failure, лог ошибок кода сервиса
 ├── _tasks.py                # TaskSet, фоновые задачи, is_cancelled_from_outside, retrieve_error
 ├── _mqtt/                   # обычный MQTT, ничего про конвенцию
-│   ├── broker_connection.py # Connection, LinkError и наследники, TopicMatcher, вся работа с aiomqtt
+│   ├── broker_connection.py # Connection, Message, LinkError и наследники, TopicMatcher, вся работа с aiomqtt
 │   │                        #   и paho, строки paho о сломанном сокете понижены с ERROR до WARNING
 │   ├── broker_url.py        # BrokerAddress, parse_broker_url, разбор адреса брокера, логин и пароль вне repr
 │   ├── checks.py            # что примет брокер, Payload, CheckedTopic, проверки топика, фильтра, QoS и тела,
 │   │                        #   is_int, is_utf8_text, символы, на которых mosquitto рвёт соединение
-│   ├── subscriber.py        # Subscriber, Message, подписки с номерами, раздача колбэкам, состояние retained
+│   ├── subscriber.py        # Subscriber, подписки с номерами, раздача колбэкам, состояние retained
 │   │                        #   в каждой подписке, маркеры конца выдачи, разовое чтение retained
 │   ├── publisher.py         # Publisher, публикации, зеркало своих retained, очередь сессии с окном
 │   │                        #   и барьерами, повтор после переподключения

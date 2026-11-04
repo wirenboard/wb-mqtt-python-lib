@@ -23,8 +23,9 @@ from .._errors import (
 from .._listeners import Handler, ListenerRegistry
 from .._logs import get_logger
 from .._mqtt import checks
+from .._mqtt.broker_connection import Message
 from .._mqtt.publisher import Publisher
-from .._mqtt.subscriber import Message, Subscriber
+from .._mqtt.subscriber import Subscriber
 from .._tasks import TaskSet, is_cancelled_from_outside, retrieve_error
 from . import topics
 from .state import (
@@ -93,7 +94,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         """
         End the waits with ClientClosedError and stop subscriptions and erasures in progress.
         """
-        self.state.fail_waits(ClientClosedError("the client is closed"))
+        self.state.fail_waits(ClientClosedError())
         await self._tasks.cancel_all_tasks(self._device_watches.values())
 
     # ------------------------------------------------------------
@@ -303,7 +304,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             if control.meta.readonly:
                 raise ReadonlyControlError(f"{device_name}/{control_name} is readonly and takes no commands")
             payload, _ = to_payload_and_value(control.meta, value)
-            await self._publisher.publish(topics.control_command(device_name, control_name), payload, qos=1)
+            await self._publisher.publish(topics.control_command(device_name, control_name), payload)
             return
 
         # Own pushbutton, a press is an event and keeps no value. It becomes an event once the broker
@@ -690,12 +691,12 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         except asyncio.CancelledError:
             # The internal task the caller waits for was cancelled by close(), not the caller itself
             if pending.done() and self._is_closed() and not is_cancelled_from_outside():
-                raise ClientClosedError("the client is closed") from None
+                raise ClientClosedError() from None
             raise
 
     def _raise_if_closed(self) -> None:
         if self._is_closed():
-            raise ClientClosedError("the client is closed")
+            raise ClientClosedError()
 
 
 def _check_not_created(name: str, device: DeviceRecord) -> None:

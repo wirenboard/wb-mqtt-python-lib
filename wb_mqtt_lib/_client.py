@@ -164,7 +164,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
             if self._fatal_error is not None:
                 raise self._fatal_error
             if self._closed:
-                raise ClientClosedError("the client is closed")
+                raise ClientClosedError()
         except BaseException:
             # Without a wait here another cancellation of the caller cannot reach the sessions
             self._request_stop()
@@ -225,7 +225,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         """
         if self._closed:
             coroutine.close()
-            raise ClientClosedError("the client is closed")
+            raise ClientClosedError()
         return self._service_tasks.start_task(coroutine, name or getattr(coroutine, "__qualname__", "task"))
 
     # ------------------------------------------------------------
@@ -455,7 +455,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
 
     def _raise_if_closed(self) -> None:
         if self._closed:
-            raise ClientClosedError("the client is closed")
+            raise ClientClosedError()
 
     def _is_closed(self) -> bool:
         return self._closed
