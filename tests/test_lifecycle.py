@@ -36,6 +36,7 @@ from wb_mqtt_lib import (
     ControlErrorFlags,
     ControlType,
 )
+from wb_mqtt_lib._mqtt import broker_connection
 from wb_mqtt_lib._mqtt import subscriber as subscriber_module
 
 # A raw subscription waits for the broker like the reads and must not stay as subscribed after close
@@ -288,6 +289,58 @@ async def test_connect_given_up_while_the_broker_is_silent_ends_on_time_and_free
         assert not [task for task in asyncio.all_tasks() if task.get_name().startswith("mqtt sessions")]
     # Handlers of the silent server end a few loop iterations after their connections close
     await wait_for_task_count(tasks_before)
+
+
+async def test_connect_given_up_before_a_late_connack_restores_and_reports_nothing(
+    broker: MosquittoBroker, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The service gives up on connect() while the broker answers late. The attempt that gets CONNACK
+    afterwards ends at once, a handler registered before connect() hears nothing.
+    """
+    enter = broker_connection.Connection.__aenter__
+
+    async def connack_after_the_caller_gave_up(connection: broker_connection.Connection) -> Any:
+        entered = await enter(connection)
+        await asyncio.sleep(0.5)
+        return entered
+
+    monkeypatch.setattr(broker_connection.Connection, "__aenter__", connack_after_the_caller_gave_up)
+    client = Client("test-service", broker.url())
+    changes: list[bool] = []
+    client.on_connection_change(changes.append)
+    try:
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(client.connect(), 0.2)
+        await asyncio.sleep(1)
+        assert not changes and not client.is_connected
+    finally:
+        await wait_or_dump(client.close(), timeout=10)
+
+
+async def test_close_cancels_a_handler_that_removed_itself_and_still_runs(client: Client) -> None:
+    """
+    A handler removed itself and still runs its call. close() cancels that call and returns after it ended.
+    """
+    level = await (await client.create_device("dev")).create_control("level", ControlType.VALUE, value=0)
+    running = asyncio.Event()
+    ended: list[str] = []
+
+    async def once(control: Control, _value: Any, _previous: Any) -> None:
+        control.remove_handler(once)
+        running.set()
+        try:
+            await asyncio.sleep(10)
+        except asyncio.CancelledError:
+            ended.append("cancelled")
+            raise
+
+    level.on_value(once)
+    await wait_or_dump(running.wait(), timeout=2)
+
+    await wait_or_dump(client.close(), timeout=5)
+
+    assert ended == ["cancelled"]
 
 
 async def test_connect_right_after_a_cancelled_one_waits_until_its_attempt_ends(

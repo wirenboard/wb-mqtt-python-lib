@@ -14,7 +14,10 @@ from types import MappingProxyType
 from typing import Any, Mapping, Optional, Union
 
 from .._errors import InvalidNameError
+from .._logs import get_logger
 from .._mqtt.checks import is_int, is_refused_by_broker, is_utf8_text
+
+logger = get_logger(__name__)
 
 # ------------------------------------------------------------
 # Control types
@@ -480,6 +483,15 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
     if not is_utf8_text(value) or not value:
         raise TypeError(f"{control_type} control takes a non-empty str valid in UTF-8, got {value!r}")
     return value, value
+
+
+def warn_if_converted_to_bool(value: Any, payload: str, address: str) -> None:
+    """
+    Log a switch payload other than «1» and «0» that parse_value read as a bool, so its sender shows
+    in the log. Every caller that parses a payload of a control calls this once per new payload.
+    """
+    if isinstance(value, bool) and payload not in ("0", "1"):
+        logger.warning("Converted %r of %s to %s, expected «1» or «0»", payload[:200], address, value)
 
 
 def parse_value(meta: ControlMeta, payload: str) -> Any:

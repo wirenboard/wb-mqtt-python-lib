@@ -50,6 +50,7 @@ from .values import (
     parse_meta_fields,
     parse_value,
     to_payload_and_value,
+    warn_if_converted_to_bool,
 )
 
 logger = get_logger(__name__)
@@ -223,8 +224,11 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         # Removed in the same step as the erasure, so its echoes apply like those of a foreign device
         erasure_done = self._erase(self._add_own_topics_under(to_erase, topics.device_root(name)))
         self.state.mark_device_removed(name)
+        # The caller gets the error of the task, as with create_device
         await self._wait_for_broker(
-            self._tasks.start_task(self._unsubscribe_commands_after(name, erasure_done), f"remove {name}")
+            self._tasks.start_task(
+                self._unsubscribe_commands_after(name, erasure_done), f"remove {name}", log_error=False
+            )
         )
 
     async def create_control(  # pylint: disable=too-many-arguments,too-many-positional-arguments,too-many-locals
@@ -302,17 +306,24 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             await self._publisher.publish(topics.control_command(device_name, control_name), payload, qos=1)
             return
 
-        # Own pushbutton, a press is an event and keeps no value
+        # Own pushbutton, a press is an event and keeps no value. It becomes an event once the broker
+        # confirmed it, also when the caller was cancelled meanwhile.
         if control.meta.control_type == ControlType.PUSHBUTTON:
             payload, _ = to_payload_and_value(control.meta, value)
             generation = control.generation
-            await self._publisher.publish(control.topics.value, payload, qos=1)
-            # A press that did not reach the broker is not an event, nor one of a button removed meanwhile
-            if (
-                self.state.get_control(device_name, control_name) is control
-                and control.generation == generation
-            ):
-                self.state.emit_pushbutton_press(device_name, control_name)
+
+            def emit_press(published: asyncio.Future) -> None:
+                # A press that did not reach the broker is not an event, nor one of a button removed meanwhile
+                if published.cancelled() or published.exception() is not None:
+                    return
+                if self.state.get_control(device_name, control_name) is control and (
+                    control.generation == generation
+                ):
+                    self.state.emit_pushbutton_press(device_name, control_name)
+
+            pressed = self._publisher.put_event(control.topics.value, payload)
+            pressed.add_done_callback(emit_press)
+            await self._wait_for_broker(pressed)
             return
 
         # Own control of another type, every call goes out and reaches on_value. None erases the value.
@@ -509,7 +520,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             value = True
         else:
             value = parse_value(control.meta, payload)
-            _warn_if_converted_to_bool(value, payload, topic.device, topic.control)
+            warn_if_converted_to_bool(value, payload, f"{topic.device}/{topic.control}")
         try:
             to_payload_and_value(control.meta, value)
         except TypeError:
@@ -569,7 +580,6 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
 
         # The commands get subscribed, waits for the device end
         subscribed = self._tasks.start_task(self._subscribe_commands(name), f"subscribe commands of {name}")
-        self.state.wake_device_waits(name)
         await asyncio.gather(published, subscribed)
 
     def _require_own_device(self, name: str) -> DeviceRecord:
@@ -837,26 +847,16 @@ def _apply_value(  # pylint: disable=too-many-arguments,too-many-positional-argu
         return
 
     # The payload is kept, the value is parsed by the meta, now or once the meta comes
+    previous_payload = control.payload
     control.payload = payload or None
     if control.meta is not None:
         value = parse_value(control.meta, payload) if payload else None
-        _warn_if_converted_to_bool(value, payload, device_name, control_name)
+        # A payload repeated, after reconnect for example, is in the log already
+        if control.payload != previous_payload:
+            warn_if_converted_to_bool(value, payload, f"{device_name}/{control_name}")
         state.set_control_value(device_name, control_name, value, notify_unchanged=not resent)
     elif not payload:
         state.drop_control_if_unused(device_name, control_name)
-
-
-def _warn_if_converted_to_bool(value: Any, payload: str, device_name: str, control_name: str) -> None:
-    # The convention writes a switch as «1» or «0», another number is converted to True and its sender shows
-    # in the log
-    if isinstance(value, bool) and payload not in ("0", "1"):
-        logger.warning(
-            "Converted %r of %s/%s to %s, expected «1» or «0»",
-            payload[:200],
-            device_name,
-            control_name,
-            value,
-        )
 
 
 def _build_state(retained: dict[str, bytes]) -> State:

@@ -204,6 +204,22 @@ class Publisher:
             payload = bytes(payload)
         await asyncio.shield(self._put([(topic, payload, 0)], qos, retain, wait_for_puback=True))
 
+    def put_event(self, topic: str, payload: checks.Payload) -> asyncio.Future:
+        """
+        Put an own event, a message without retain, into the queue, QoS 1. The topic and the payload are
+        checked by the caller.
+
+        Returns:
+            A future that ends when the broker confirmed the message. It fails with BrokerDisconnectedError
+            when the link is lost or the broker does not confirm it in broker_connection.ACK_TIMEOUT_S,
+            and with ClientClosedError when the client closes before that.
+
+        Raises:
+            BrokerDisconnectedError: the link is down.
+            Exception: an unexpected error of paho or aiomqtt on the way to paho, as it is.
+        """
+        return self._put([(topic, payload, 0)], 1, False, wait_for_puback=True)
+
     def put_retained(
         self, messages: Sequence[tuple[str, checks.Payload]], *, wait_for_puback: bool = True
     ) -> asyncio.Future:

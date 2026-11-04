@@ -635,6 +635,32 @@ async def test_own_pushbutton_press_is_an_event_only_when_it_went_out(
     assert presses == [(True, None), (True, None)] and button.value is None
 
 
+async def test_press_of_a_cancelled_caller_still_goes_out_and_is_an_event(
+    connect: ConnectClient, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The caller of a press is cancelled while the broker has not confirmed it yet. The press goes out
+    and still reaches on_value once the broker confirms it.
+    """
+    button = await (await client.create_device("dev")).create_control("button", ControlType.PUSHBUTTON)
+    presses: list = []
+    button.on_value(lambda control, value, previous: presses.append((value, previous)))
+    watcher = await connect("watcher")
+    seen: list[bytes] = []
+    await watcher.raw.subscribe("/devices/dev/controls/button", lambda message: seen.append(message.payload))
+
+    async def confirm_late(send: Send, topic: str, _payload: Any) -> None:
+        await send()
+        if topic == "/devices/dev/controls/button":
+            await asyncio.sleep(0.5)
+
+    intercept_publish(monkeypatch, confirm_late)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(button.set_value(True), 0.1)
+
+    await wait_until(lambda: presses == [(True, None)] and seen == [b"1"])
+
+
 async def test_own_listeners_survive_removal_and_creation_again(
     connect: ConnectClient, client: Client
 ) -> None:

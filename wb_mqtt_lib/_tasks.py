@@ -87,7 +87,11 @@ class TaskSet:
         self._tasks.discard(task)
         if task.cancelled():
             if not task.cancelling():
-                # Nobody cancelled the task, it ended with a CancelledError of something it awaited
-                log_failure(self._logger, f"Task {task.get_name()}", asyncio.CancelledError())
+                # Nobody cancelled the task, it ended with a CancelledError of something it awaited.
+                # result() raises that error with its traceback.
+                try:
+                    task.result()
+                except asyncio.CancelledError as error:
+                    log_failure(self._logger, f"Task {task.get_name()}", error)
         elif task.exception() is not None:
             log_failure(self._logger, f"Task {task.get_name()}", task.exception())

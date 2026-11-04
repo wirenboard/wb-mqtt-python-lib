@@ -21,6 +21,7 @@ from .values import (
     DeviceMeta,
     TranslatedTitle,
     parse_value,
+    warn_if_converted_to_bool,
 )
 
 logger = get_logger(__name__)
@@ -390,7 +391,9 @@ class State:  # pylint: disable=too-many-public-methods
                 device_name, control_name, ControlEvent.ERROR, control.error, ControlErrorFlags.NONE
             )
         if control.payload is not None:
-            self.set_control_value(device_name, control_name, parse_value(meta, control.payload))
+            value = parse_value(meta, control.payload)
+            warn_if_converted_to_bool(value, control.payload, f"{device_name}/{control_name}")
+            self.set_control_value(device_name, control_name, value)
 
     def set_control_meta(self, device_name: str, control_name: str, meta: ControlMeta) -> None:
         """
@@ -407,6 +410,7 @@ class State:  # pylint: disable=too-many-public-methods
                 control.payload = None
             control.value = None if control.payload is None else parse_value(meta, control.payload)
             if control.value is not None:
+                warn_if_converted_to_bool(control.value, control.payload, f"{device_name}/{control_name}")
                 _wake_value_waits(control)
         self._emit_control_event(device_name, control_name, ControlEvent.META)
 
@@ -563,8 +567,9 @@ class State:  # pylint: disable=too-many-public-methods
         device.driver = driver
         device.next_order = 1
 
-        # The listeners learn what changed
+        # The listeners learn what changed, the waits for the device end
         self._announce_device_change(device_name, state_before)
+        self.wake_device_waits(device_name)
 
     def mark_device_removed(self, device_name: str) -> None:
         """

@@ -356,6 +356,9 @@ class Client:  # pylint: disable=too-many-instance-attributes
             reported_connected = False
             try:
                 async with broker_connection.Connection(self._address, self._client_id) as connection:
+                    # connect() gave up or close() began while this attempt waited for CONNACK
+                    if self._stop_requested.is_set():
+                        return
                     connected_once = True
                     await self._subscriber.connection_restored(connection)
                     self._publisher.connection_restored(connection)

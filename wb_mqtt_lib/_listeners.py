@@ -88,6 +88,9 @@ class Listener:
         self._task: Optional[asyncio.Task] = None
 
     def queue_event(self, args: tuple) -> None:
+        # A stopped listener takes no more events, nobody would ever read them
+        if self._stopped:
+            return
         self._queue.put_nowait(args)
         if self._task is None and not self._stopped:
             self._task = asyncio.create_task(self._handle_events(), name=f"listener {self._description}")
@@ -182,6 +185,7 @@ class ListenerRegistry:
     async def stop_all(self, spare: Optional[asyncio.Task] = None) -> None:
         """
         Stop every listener and wait until their tasks end, except the task that calls this and spare.
+        A handler that removed itself and still runs its call is cancelled too.
 
         The spared listener stops after its current call.
         """
@@ -190,6 +194,11 @@ class ListenerRegistry:
         for listener in listeners:
             listener.stop(spare)
         tasks = [listener.task for listener in listeners if listener.task not in (None, current_task, spare)]
+        # A handler that removed itself is no longer listed, but its call may still run
+        for task in list(self._tasks):
+            if task not in tasks and task not in (current_task, spare) and not task.done():
+                task.cancel()
+                tasks.append(task)
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
