@@ -19,7 +19,7 @@ _MAX_TOPIC_BYTES = 65535
 
 class CheckedTopic(str):
     """
-    An immutable publication topic checked once before it enters the own device state.
+    An immutable publication topic checked once when it is made, the publisher does not check it again.
     """
 
     __slots__ = ()

@@ -229,7 +229,7 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         Only for an own control. Change meta fields on the fly, for example title, units or readonly.
 
-        A field set back to None leaves the meta, an open homeui page keeps the old one until it is reloaded.
+        A field set back to None leaves the meta.
         readonly and hidden take only True or False. With a link it returns once the broker confirmed
         the meta, or after 5 s without confirmation, then the meta goes again.
 

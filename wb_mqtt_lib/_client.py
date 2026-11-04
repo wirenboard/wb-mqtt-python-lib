@@ -196,8 +196,8 @@ class Client:  # pylint: disable=too-many-instance-attributes
 
         The first connection is a change too, so a handler registered before connect() gets True when
         the client connects. The handler is not called at the registration, the current state is in
-        connected. True comes after the client subscribed again. A lost link and the failed attempts after it
-        give one False, before the first connection there is none, and close() gives none.
+        is_connected. True comes after the client subscribed again. A lost link and the failed attempts after
+        it give one False, before the first connection there is none, and close() gives none.
 
         Raises:
             TypeError: the handler does not take one argument.
