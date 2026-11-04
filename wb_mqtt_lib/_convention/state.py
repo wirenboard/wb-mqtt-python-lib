@@ -411,18 +411,22 @@ class State:  # pylint: disable=too-many-public-methods
 
     def mark_control_removed(self, device_name: str, control_name: str) -> None:
         """
-        The control is gone. The record is dropped unless listeners or waits hang on it.
+        The control is gone. Its value and its error go first with on_value and on_error, as when a driver
+        erases their topics, then on_removed comes. The record is dropped unless listeners or waits hang
+        on it.
         """
         # State before the change, for _announce_device_change
         device = self._devices[device_name]
         control = device.controls[control_name]
         state_before = self._get_device_state(device_name)
 
+        # The value and the error go in the reverse order of the appearance
+        self.set_control_value(device_name, control_name, None)
+        self.set_control_error(device_name, control_name, ControlErrorFlags.NONE)
+
         # The record is cleared
         control.meta = None
         control.payload = None
-        control.value = None
-        control.error = ControlErrorFlags.NONE
         control.generation += 1
 
         # The listeners of the control and of its device learn it is gone
@@ -562,14 +566,15 @@ class State:  # pylint: disable=too-many-public-methods
 
     def mark_device_removed(self, device_name: str) -> None:
         """
-        The service removed the own device, it reads like a foreign one from now on. Its controls go with
-        on_removed, its error is cleared without on_error, then on_removed of the device tells it is gone.
+        The service removed the own device, it reads like a foreign one from now on. Its controls go
+        as mark_control_removed tells, its error goes with on_error, then on_removed of the device tells
+        it is gone.
         """
         device = self._devices[device_name]
         device.ownership = Ownership.REMOVED
         for control_name in reversed(self.existing_control_names(device_name)):
             self.mark_control_removed(device_name, control_name)
-        device.error = ControlErrorFlags.NONE
+        self.set_device_error(device_name, ControlErrorFlags.NONE)
         self.clear_device_meta(device_name)
 
     def wake_device_waits(self, device_name: str) -> None:
@@ -624,9 +629,12 @@ class State:  # pylint: disable=too-many-public-methods
         else:
             return
 
-        # The event, and on_error too for a device that appears with an error
-        self._emit_device_event(device_name, event)
+        # The event, and on_error too for a device that appears or goes with an error. The error stays in
+        # the record and shows again if the device comes back.
         error = self._devices[device_name].error
+        if event == DeviceEvent.REMOVED and error:
+            self._emit_device_event(device_name, DeviceEvent.ERROR, ControlErrorFlags.NONE, error)
+        self._emit_device_event(device_name, event)
         if event == DeviceEvent.ADDED and error:
             self._emit_device_event(device_name, DeviceEvent.ERROR, error, ControlErrorFlags.NONE)
 

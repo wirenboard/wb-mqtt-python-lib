@@ -2,6 +2,7 @@
 Values of own controls as they go into the broker, and declarations the library refuses.
 """
 
+import dataclasses
 import json
 from typing import Optional
 
@@ -19,10 +20,12 @@ from tests.conftest import ConnectClient
 from wb_mqtt_lib import (
     Client,
     ControlErrorFlags,
+    ControlMeta,
     ControlType,
     InvalidNameError,
     TranslatedTitle,
 )
+from wb_mqtt_lib._convention.values import ControlMetaFields
 
 # Numbers as wb-rules publishes them with precision and without it, checked on the controller
 FORMATTED = [
@@ -191,6 +194,8 @@ async def test_invalid_declaration_publishes_nothing(broker: MosquittoBroker, cl
         (device.create_control("a", ControlType.PUSHBUTTON, value="x"), TypeError),
         (device.create_control("a", ControlType.VALUE, title=5), TypeError),
         (device.create_control("a", ControlType.VALUE, title={"en": 5}), TypeError),
+        (device.create_control("a", ControlType.VALUE, title={"en": "A", "RU": "Б"}), TypeError),
+        (device.create_control("a", ControlType.VALUE, enum={"0": {"en": "Off", "de": "Aus"}}), TypeError),
         (device.create_control("a", ControlType.VALUE, enum=["on", "off"]), TypeError),
         (device.create_control("a", ControlType.VALUE, enum={"0": {"en": 0}}), TypeError),
         (device.create_control("a", ControlType.VALUE, precision="abc"), TypeError),
@@ -378,3 +383,12 @@ async def test_value_with_precision_is_rounded_and_every_set_value_goes_out(
     await wait_until(lambda: payloads == [b"21.5", b"21.5", b"21.4"])
     await wait_until(lambda: events == [(21.5, None), (21.5, 21.5), (21.4, 21.5)])
     assert level.value == 21.4
+
+
+def test_hints_of_update_meta_name_every_meta_field() -> None:
+    """
+    The hints of update_meta name every field of the control meta except the type, a new field of the meta
+    shows up there too.
+    """
+    meta_fields = {field.name for field in dataclasses.fields(ControlMeta)} - {"control_type"}
+    assert set(ControlMetaFields.__annotations__) == meta_fields

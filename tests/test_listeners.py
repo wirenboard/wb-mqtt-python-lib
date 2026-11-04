@@ -189,14 +189,14 @@ async def test_every_listener_waits_for_a_control_that_does_not_exist_yet(
     assert await wait_or_dump(value_wait, timeout=6) == 1
     await temp.set_error(ControlErrorFlags.READ)
     await temp.update_meta(units="V")
-    await temp.remove()
+    await driver.raw.publish("/devices/dev/controls/temp/meta", "", retain=True)
     await own_device.create_control("later", ControlType.SWITCH, value=False)
     await driver.raw.publish("/devices/own/controls/later/on", "1")
 
     await wait_until(lambda: events["removed"] and commands == [True])
     assert events == {
         "added": [foreign],
-        # the driver erases the value and /meta/error before the meta, so both are cleared before the removal
+        # Only the meta is erased, the value and the error left in the broker are cleared with the removal
         "value": [1, None],
         "error": [ControlErrorFlags.READ, ControlErrorFlags.NONE],
         "meta": ["V"],
@@ -431,16 +431,22 @@ async def test_device_listeners_see_a_foreign_device_appear_change_and_go(
 async def test_device_without_meta_appears_and_goes_with_its_controls(driver: Client, client: Client) -> None:
     """
     wb-nm-helper and wb-cloud-agent publish only /meta/name. Such a device has no driver and exists
-    from its first control to its last one.
+    from its first control to its last one. Its error left in the broker goes with on_error when it goes.
     """
     await publish_retained(
         driver,
-        {"/devices/legacy/meta/name": "Legacy", "/devices/legacy/controls/a/meta": '{"type": "text"}'},
+        {
+            "/devices/legacy/meta/name": "Legacy",
+            "/devices/legacy/meta/error": "r",
+            "/devices/legacy/controls/a/meta": '{"type": "text"}',
+        },
     )
     remote = await client.get_device("legacy")
     events = []
+    errors = []
     remote.on_added(lambda device: events.append("added"))
     remote.on_removed(lambda device: events.append("removed"))
+    remote.on_error(lambda device, error, previous: errors.append((error, previous)))
     assert remote.exists and remote.meta.driver is None and list(remote.controls) == ["a"]
 
     await driver.raw.publish("/devices/legacy/controls/b/meta", '{"type": "text"}', retain=True)
@@ -449,7 +455,12 @@ async def test_device_without_meta_appears_and_goes_with_its_controls(driver: Cl
     assert events == ["added"]
     await driver.raw.publish("/devices/legacy/controls/b/meta", "", retain=True)
 
-    await wait_until(lambda: events == ["added", "removed"])
+    await wait_until(lambda: events == ["added", "removed"] and len(errors) == 2)
+    assert errors == [
+        (ControlErrorFlags.READ, ControlErrorFlags.NONE),
+        (ControlErrorFlags.NONE, ControlErrorFlags.READ),
+    ]
+    assert remote.error == ControlErrorFlags.NONE
 
 
 async def test_device_listeners_follow_a_name_from_a_foreign_device_to_an_own_one(

@@ -11,7 +11,7 @@ from dataclasses import dataclass, field, fields
 from decimal import Decimal
 from enum import Flag, StrEnum, auto
 from types import MappingProxyType
-from typing import Any, Mapping, Optional, Union
+from typing import Any, Literal, Mapping, Optional, TypedDict, Union
 
 from .._errors import InvalidNameError
 from .._logs import get_logger
@@ -102,6 +102,10 @@ def check_name(name: str, entity: str) -> None:
 # ------------------------------------------------------------
 
 
+# Languages of a title
+Language = Literal["en", "ru"]
+
+
 @dataclass(frozen=True)
 class TranslatedTitle:
     """
@@ -120,7 +124,8 @@ class TranslatedTitle:
             title: a string, a {"en": ..., "ru": ...} mapping, a TranslatedTitle or None.
 
         Raises:
-            TypeError: anything else, or a text that is not a string valid in UTF-8.
+            TypeError: anything else, a language other than en and ru, or a text that is not a string valid
+                in UTF-8.
         """
         if title is None:
             return cls()
@@ -129,6 +134,9 @@ class TranslatedTitle:
         elif isinstance(title, str):
             texts = (title, None)
         elif isinstance(title, Mapping):
+            # Another key is most likely a typo, the web interface shows only English and Russian
+            if not set(title) <= {"en", "ru"}:
+                raise TypeError(f"title takes only the languages en and ru, got {title!r}")
             texts = (title.get("en"), title.get("ru"))
         else:
             raise TypeError(f"unsupported title {title!r}")
@@ -150,12 +158,12 @@ class TranslatedTitle:
     def is_empty(self) -> bool:
         return not self.en and not self.ru
 
-    def get(self, lang: str, default: Optional[str] = None) -> Optional[str]:
+    def get(self, lang: Language, default: Optional[str] = None) -> Optional[str]:
         """
         Text in the language, else in the other language, else the default, the way homeui shows a title.
 
         Args:
-            lang: "en" or "ru".
+            lang: the language of the text.
             default: what to return when there is no text at all, for example the control name.
         """
         first, second = (self.ru, self.en) if lang == "ru" else (self.en, self.ru)
@@ -170,6 +178,23 @@ class TranslatedTitle:
 
 # What the service may pass as a title
 TitleLike = Union[None, str, Mapping[str, str], TranslatedTitle]
+
+
+class ControlMetaFields(TypedDict, total=False):
+    """
+    Meta fields of an own control that update_meta takes, the same as in Device.create_control.
+    """
+
+    title: TitleLike
+    maximum: Optional[float]
+    minimum: Optional[float]
+    precision: Optional[float]
+    readonly: bool
+    units: Optional[str]
+    order: Optional[int]
+    hidden: bool
+    enum: Optional[Mapping[str, TitleLike]]
+
 
 # ------------------------------------------------------------
 # Errors

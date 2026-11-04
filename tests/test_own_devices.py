@@ -665,16 +665,20 @@ async def test_own_listeners_survive_removal_and_creation_again(
     connect: ConnectClient, client: Client
 ) -> None:
     """
-    Listeners of an own control stay through remove() and work with the control created again.
+    Listeners of an own control stay through remove() and work with the control created again. remove()
+    clears the value and the error with on_value and on_error, as an erasure by a driver does.
     """
     device = await client.create_device("dev")
-    relay = await device.create_control("relay", ControlType.SWITCH, value=False)
-    events: dict[str, list] = {"added": [], "removed": [], "value": [], "command": []}
+    relay = await device.create_control(
+        "relay", ControlType.SWITCH, value=False, error=ControlErrorFlags.READ
+    )
+    events: dict[str, list] = {"added": [], "removed": [], "value": [], "error": [], "command": []}
     relay.on_added(events["added"].append)
     relay.on_removed(events["removed"].append)
     relay.on_value(lambda control, value, previous: events["value"].append((value, previous)))
+    relay.on_error(lambda control, error, previous: events["error"].append((error, previous)))
     relay.on_command(lambda control, value: events["command"].append(value))
-    await wait_until(lambda: events["added"] and events["value"])
+    await wait_until(lambda: events["added"] and events["value"] and events["error"])
 
     await device.remove()
     device = await client.create_device("dev")
@@ -684,7 +688,11 @@ async def test_own_listeners_survive_removal_and_creation_again(
 
     await wait_until(lambda: events["command"] == [False])
     assert events["added"] == [relay, relay] and events["removed"] == [relay]
-    assert events["value"] == [(False, None), (True, None)]
+    assert events["value"] == [(False, None), (None, False), (True, None)]
+    assert events["error"] == [
+        (ControlErrorFlags.READ, ControlErrorFlags.NONE),
+        (ControlErrorFlags.NONE, ControlErrorFlags.READ),
+    ]
 
 
 async def test_remove_driver_devices_erases_controls_first_and_device_meta_last(
@@ -787,8 +795,8 @@ async def test_device_error_is_set_cleared_and_erased_before_the_device_meta(
     broker: MosquittoBroker, connect: ConnectClient, client: Client
 ) -> None:
     """
-    The error of the device itself goes to /devices/<device>/meta/error, once per change. remove() erases it
-    before the device meta.
+    The error of the device itself goes to /devices/<device>/meta/error, once per change. remove() clears it
+    with on_error and erases it before the device meta.
     """
     device = await client.create_device("dev")
     await device.create_control("temp", ControlType.VALUE, value=1)
@@ -813,11 +821,12 @@ async def test_device_error_is_set_cleared_and_erased_before_the_device_meta(
     last_seen = {topic: index for index, (topic, _payload) in enumerate(seen)}
     assert last_seen["/devices/dev/meta/error"] < last_seen["/devices/dev/meta"]
     assert await read_retained(broker.port, "/devices/dev/#") == {}
-    await wait_until(lambda: len(events) == 3)
+    await wait_until(lambda: len(events) == 4)
     assert events == [
         (ControlErrorFlags.READ, ControlErrorFlags.NONE),
         (ControlErrorFlags.NONE, ControlErrorFlags.READ),
         (ControlErrorFlags.WRITE, ControlErrorFlags.NONE),
+        (ControlErrorFlags.NONE, ControlErrorFlags.WRITE),
     ]
 
 

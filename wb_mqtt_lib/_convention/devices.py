@@ -6,7 +6,7 @@ at the moment of the call. Any number of objects for one name see the same state
 are compared with ==, not with is. Only the client builds them.
 """
 
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Unpack
 
 from .._listeners import (
     ChangeHandler,
@@ -17,7 +17,14 @@ from .._listeners import (
 )
 from .device_manager import DeviceManager
 from .state import ControlEvent, ControlRecord, DeviceEvent, DeviceRecord
-from .values import ControlErrorFlags, ControlMeta, ControlType, DeviceMeta, TitleLike
+from .values import (
+    ControlErrorFlags,
+    ControlMeta,
+    ControlMetaFields,
+    ControlType,
+    DeviceMeta,
+    TitleLike,
+)
 
 # Meta of a control or a device that does not exist, every field empty
 _EMPTY_CONTROL_META = ControlMeta()
@@ -218,7 +225,7 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         await self._device_manager.set_control_error(self.device.name, self.name, error)
 
-    async def update_meta(self, **fields: Any) -> None:
+    async def update_meta(self, **fields: Unpack[ControlMetaFields]) -> None:
         """
         Only for an own control. Change meta fields on the fly, for example title, units or readonly.
 

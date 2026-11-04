@@ -450,7 +450,9 @@ Publisher.publish, put_retained и put_erasure, общий Publisher._put
 
 ```
 device.remove()
-  → стирания через Publisher.put_erasure, потом State.mark_device_removed, имя REMOVED, контролы пропадают
+  → стирания через Publisher.put_erasure, потом State.mark_device_removed, имя REMOVED. Каждый контрол
+    получает on_value с None и on_error с NONE, если они были, потом on_removed, затем on_error
+    и on_removed самого устройства
   → стираются стандартные топики контролов и устройства и всё, что под устройством есть в зеркале
   → этап 0, значения, команды, ошибки и старые подтопики меты контролов
   → PUBACK всех, этап 1, мета контролов, ошибка устройства, старые подтопики меты устройства

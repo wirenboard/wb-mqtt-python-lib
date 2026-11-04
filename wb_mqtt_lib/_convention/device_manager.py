@@ -9,7 +9,7 @@ an await in between and only then waits for the broker, so a cancelled call neve
 import asyncio
 import dataclasses
 import enum
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Optional, Unpack
 
 from .._errors import (
     AlreadyCreatedError,
@@ -40,6 +40,7 @@ from .state import (
 from .values import (
     ControlErrorFlags,
     ControlMeta,
+    ControlMetaFields,
     ControlSnapshot,
     ControlType,
     DeviceMeta,
@@ -380,7 +381,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
         self.state.set_device_error(name, error)
         await self._wait_for_broker(published)
 
-    async def update_control_meta(self, device_name: str, control_name: str, **fields: Any) -> None:
+    async def update_control_meta(
+        self, device_name: str, control_name: str, **fields: Unpack[ControlMetaFields]
+    ) -> None:
         self._require_own_device(device_name)
         control = self._require_existing_control(device_name, control_name)
         updated = dataclasses.replace(control.meta, **parse_meta_fields(fields))
