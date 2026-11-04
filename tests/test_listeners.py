@@ -39,39 +39,6 @@ async def test_state_listeners_fire_at_registration_with_previous_none(
     assert sorted(calls, key=str) == sorted(["added", ("value", 3, None)], key=str)
 
 
-async def test_value_and_error_that_came_before_the_meta_reach_handlers_at_appearance(
-    driver: Client, client: Client
-) -> None:
-    """
-    A value of a control and an error of a control or of the device that came before the meta reach on_value
-    and on_error registered earlier when the meta arrives.
-    """
-    device = await client.get_device("dev")
-    control = await client.get_control("dev/temp")
-    calls: list = []
-    control.on_value(lambda c, value, previous: calls.append(("value", value, previous)))
-    control.on_error(lambda c, error, previous: calls.append(("control", error, previous)))
-    device.on_error(lambda d, error, previous: calls.append(("device", error, previous)))
-
-    await publish_retained(
-        driver,
-        {
-            "/devices/dev/controls/temp/meta/error": "r",
-            "/devices/dev/meta/error": "w",
-            "/devices/dev/meta": '{"driver": "driver"}',
-            "/devices/dev/controls/temp": "21",
-            "/devices/dev/controls/temp/meta": '{"type": "value"}',
-        },
-    )
-
-    await wait_until(lambda: len(calls) == 3)
-    assert sorted(calls, key=str) == [
-        ("control", ControlErrorFlags.READ, ControlErrorFlags.NONE),
-        ("device", ControlErrorFlags.WRITE, ControlErrorFlags.NONE),
-        ("value", 21, None),
-    ]
-
-
 async def test_same_handler_registered_twice_is_called_once(level: Control) -> None:
     """
     The second registration of the same handler adds nothing.

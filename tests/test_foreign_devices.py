@@ -597,30 +597,41 @@ async def test_foreign_device_error_follows_the_broker(
     assert remote.error == ControlErrorFlags.NONE
 
 
-async def test_error_reads_none_while_the_control_or_the_device_does_not_exist(
+async def test_value_and_error_that_came_before_the_meta_show_once_the_control_appears(
     driver: Client, client: Client
 ) -> None:
     """
-    error reads NONE while the control or the device does not exist. An error that came before the meta
-    shows once the control appears.
+    error reads NONE while the control or the device does not exist. A value and an error that came before
+    the meta show once the control appears, and on_value and on_error registered earlier get them then.
     """
-    control = await client.get_control("dev/temp")
     device = await client.get_device("dev")
+    control = await client.get_control("dev/temp")
+    calls: list = []
+    control.on_value(lambda c, value, previous: calls.append(("value", value, previous)))
+    control.on_error(lambda c, error, previous: calls.append(("control", error, previous)))
+    device.on_error(lambda d, error, previous: calls.append(("device", error, previous)))
+
     await publish_retained(
         driver,
         {
             "/devices/dev/controls/temp/meta/error": "r",
             "/devices/dev/meta/error": "w",
             "/devices/dev/meta": '{"driver": "driver"}',
+            "/devices/dev/controls/temp": "21",
         },
     )
     await wait_until(lambda: device.exists)
     assert device.error == ControlErrorFlags.WRITE
-    assert not control.exists and control.error == ControlErrorFlags.NONE
+    assert not control.exists and control.error == ControlErrorFlags.NONE and control.value is None
 
     await driver.raw.publish("/devices/dev/controls/temp/meta", '{"type": "value"}', retain=True)
-    await wait_until(lambda: control.exists)
-    assert control.error == ControlErrorFlags.READ
+    await wait_until(lambda: len(calls) == 3)
+    assert control.error == ControlErrorFlags.READ and control.value == 21
+    assert sorted(calls, key=str) == [
+        ("control", ControlErrorFlags.READ, ControlErrorFlags.NONE),
+        ("device", ControlErrorFlags.WRITE, ControlErrorFlags.NONE),
+        ("value", 21, None),
+    ]
 
     await publish_retained(driver, {"/devices/dev/controls/temp/meta": "", "/devices/dev/meta": ""})
     await wait_until(lambda: not device.exists)

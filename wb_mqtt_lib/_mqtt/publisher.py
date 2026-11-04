@@ -72,6 +72,8 @@ class _Publication:  # pylint: disable=too-many-instance-attributes
     # Queued by the replay after reconnect, skipped when a newer change overtook it
     replay: bool = False
     finished: bool = False
+    # An unexpected error of paho or aiomqtt while sending
+    error: Optional[Exception] = None
 
     def finish(self) -> None:
         """
@@ -174,14 +176,8 @@ class Publisher:
     # Publication
     # ------------------------------------------------------------
 
-    async def publish(  # pylint: disable=too-many-arguments
-        self,
-        topic: str,
-        payload: checks.Payload = None,
-        qos: int = 1,
-        retain: bool = False,
-        *,
-        wait_for_puback: bool = True,
+    async def publish(
+        self, topic: str, payload: checks.Payload = None, qos: int = 1, retain: bool = False
     ) -> None:
         """
         Publish a message and return once the broker confirmed it.
@@ -191,79 +187,52 @@ class Publisher:
         returns as well and the message goes again in its place. A non-retained message is an event, without
         a link it is an error. A cancelled call does not take the message back.
 
-        Without wait_for_puback a retained message returns once the connection took it, a send task waits for
-        PUBACK. A full window or a queue still holds the caller until the broker confirms, so a service cannot
-        run ahead of the broker. An event always waits, its caller learns whether it went out.
-
         Raises:
             ValueError: the topic or the QoS is invalid.
             TypeError: the payload is a bool or not str, bytes, bytearray, int, float or None.
             BrokerDisconnectedError: an event while the link is down, or the link is lost or the broker
                 does not confirm it in broker_connection.ACK_TIMEOUT_S.
             ClientClosedError: the client closes before the broker confirmed the message.
+            Exception: an unexpected error of paho or aiomqtt, as it is. A retained message is taken back.
         """
-        # Checks, and the payload in the form the mirror keeps
         if not isinstance(topic, checks.CheckedTopic):
             checks.check_topic(topic)
         checks.check_qos(qos)
         checks.check_payload(payload)
-        if payload in ("", b""):
-            # An empty payload erases a retained message, the mirror keeps erasures as None
-            payload = None
-        elif isinstance(payload, bytearray):
+        if isinstance(payload, bytearray):
             # A buffer the service changes later must not change what goes out after reconnect
             payload = bytes(payload)
+        await asyncio.shield(self._put([(topic, payload, 0)], qos, retain, wait_for_puback=True))
 
-        # State goes into the mirror and waits there without a link, an event needs the link
-        session = self._session
-        mirror_entry = None
-        if retain:
-            mirror_entry = self._put_in_mirror(topic, payload, qos)
-            if session is None:
-                return
-        elif session is None:
-            raise BrokerDisconnectedError(f"broker is not connected, {topic} is not published")
-
-        # Retained state with room in the window and an empty queue returns at once
-        if (
-            retain
-            and not wait_for_puback
-            and not session.queue
-            and session.inflight < broker_connection.SEND_WINDOW
-        ):
-            # The send task starts at once, the packet reaches paho before the call returns
-            session.queue.append(_Publication(topic, payload, qos, retain, mirror_entry))
-            self._send_queued(session)
-            return
-
-        # Otherwise the call waits for the broker
-        batch = _Batch(1)
-        session.queue.append(_Publication(topic, payload, qos, retain, mirror_entry, batch))
-        self._send_queued(session)
-        await asyncio.shield(batch.future)
-
-    def queue_retained(self, messages: Sequence[tuple[str, checks.Payload]]) -> asyncio.Future:
+    def put_retained(
+        self, messages: Sequence[tuple[str, checks.Payload]], *, wait_for_puback: bool = True
+    ) -> asyncio.Future:
         """
-        Put own retained messages into the mirror and the queue together, in the order given, QoS 1.
+        Put own retained state into the mirror and the queue in the order given, QoS 1. The queue hands it
+        to paho while the window has room, without a wait. A caller changes its own state after the call,
+        so an error of paho leaves that state as it was.
 
         Returns:
-            A future that ends when the broker confirmed every message or they are left to the replay.
-            It fails with ClientClosedError when the client closes before that.
-        """
-        return self._queue_staged([(topic, payload, 0) for topic, payload in messages])
+            A future that ends when the broker confirmed every message or they are left to the replay, and
+            fails with ClientClosedError when the client closes before that. Without wait_for_puback it is
+            done already when paho took the messages at once. With a full window or a queue it still waits
+            for the broker, so a service cannot run ahead of it.
 
-    def queue_erasure(self, staged: Sequence[tuple[str, int]]) -> asyncio.Future:
+        Raises:
+            Exception: an unexpected error of paho or aiomqtt on the way to paho, as it is. The mirror gets
+                back what it had before the call, and what paho sent already gets the old payload again.
         """
-        Erase retained topics in stages, QoS 1.
+        return self._put([(topic, payload, 0) for topic, payload in messages], 1, True, wait_for_puback)
+
+    def put_erasure(self, staged: Sequence[tuple[str, int]]) -> asyncio.Future:
+        """
+        Erase retained topics in stages, QoS 1, like put_retained.
 
         staged is (topic, stage) in the order of erasure, the stages do not decrease. A stage goes out once
-        the broker confirmed everything queued before it, also after reconnect.
-
-        Returns:
-            A future that ends when the broker confirmed every erasure or they are left to the replay.
-            It fails with ClientClosedError when the client closes before that.
+        the broker confirmed everything queued before it, also after reconnect. So only an error of paho on
+        the first stage reaches the caller, a later one is only logged.
         """
-        return self._queue_staged([(topic, None, stage) for topic, stage in staged])
+        return self._put([(topic, None, stage) for topic, stage in staged], 1, True, wait_for_puback=True)
 
     # ------------------------------------------------------------
     # Own retained state in the mirror
@@ -303,25 +272,73 @@ class Publisher:
     # Queue of the session and sending
     # ------------------------------------------------------------
 
-    def _queue_staged(self, staged: Sequence[tuple[str, checks.Payload, int]]) -> asyncio.Future:
+    def _put(  # pylint: disable=too-many-locals
+        self,
+        messages: Sequence[tuple[str, checks.Payload, int]],
+        qos: int,
+        retain: bool,
+        wait_for_puback: bool,
+    ) -> asyncio.Future:
         """
-        Put retained messages into the mirror and the queue in the order given, QoS 1, with a barrier
-        where the stage changes.
+        Put messages (topic, payload, stage) into the mirror, when they are retained, and into the queue
+        in the order given, with a barrier where the stage changes. The queue hands them to paho while
+        the window has room. An error of paho on a message takes the whole call back and comes as it is.
         """
         session = self._session
-        batch = _Batch(len(staged) if session is not None else 0)
+        if session is None and not retain:
+            raise BrokerDisconnectedError(f"broker is not connected, {messages[0][0]} is not published")
+
+        # Messages without wait_for_puback that paho takes at once have nothing to wait for
+        at_once = (
+            not wait_for_puback
+            and session is not None
+            and not session.queue
+            and session.inflight + len(messages) <= broker_connection.SEND_WINDOW
+        )
+        batch = None if at_once else _Batch(len(messages) if session is not None else 0)
+        # The mirror entry of every topic as it was before the call, for _take_back
+        previous_entries: list[tuple[str, Optional[_MirrorEntry]]] = []
         previous_stage = None
-        for topic, payload, stage in staged:
-            mirror_entry = self._put_in_mirror(topic, payload, 1, stage)
+        for topic, payload, stage in messages:
+            if payload in ("", b""):
+                # An empty payload erases a retained message, the mirror keeps erasures as None
+                payload = None
+            mirror_entry = None
+            if retain:
+                previous_entries.append((topic, self._mirror.get(topic)))
+                mirror_entry = self._put_in_mirror(topic, payload, qos, stage)
             if session is None:
                 continue
             if previous_stage is not None and stage != previous_stage:
                 session.queue.append(_BARRIER)
             previous_stage = stage
-            session.queue.append(_Publication(topic, payload, 1, True, mirror_entry, batch))
-        if session is not None:
+            publication = _Publication(topic, payload, qos, retain, mirror_entry, batch)
+            session.queue.append(publication)
+            # The send task starts at once and hands the packet to paho while the window has room
             self._send_queued(session)
-        return batch.future
+            if publication.error is not None:
+                self._take_back(session, previous_entries, qos)
+                raise publication.error
+        # A future that is done already does not hold the caller
+        return (batch or _Batch(0)).future
+
+    def _take_back(
+        self, session: _Session, previous_entries: list[tuple[str, Optional[_MirrorEntry]]], qos: int
+    ) -> None:
+        """
+        Undo a call whose last message failed on the way to paho. The mirror gets back what it had before
+        the call. paho has sent the messages before the failed one, so their topics get the old payload again,
+        or an erasure where there was none.
+        """
+        for topic, previous_entry in previous_entries:
+            if previous_entry is None:
+                self._mirror.pop(topic, None)
+            else:
+                self._mirror[topic] = previous_entry
+        for topic, previous_entry in reversed(previous_entries[:-1]):
+            payload = previous_entry.payload if previous_entry is not None else None
+            session.queue.append(_Publication(topic, payload, qos, True, previous_entry))
+        self._send_queued(session)
 
     def _queue_replay(self, session: _Session) -> None:
         """
@@ -418,12 +435,15 @@ class Publisher:
             # The session ended
             self._end_unconfirmed(publication)
             raise
-        except Exception:  # pylint: disable=broad-exception-caught
-            # One broken publication must not stop the rest of the own state
-            logger.exception("Own retained message on %s dropped", publication.topic)
+        except Exception as error:  # pylint: disable=broad-exception-caught
+            # One broken publication must not stop the rest. It leaves the mirror, so the replay does not
+            # repeat it. The caller of _put gets the error at once, and a later one fails a waiting event.
+            logger.exception("Publishing to %s failed", publication.topic)
+            publication.error = error
             if publication.retain and self._mirror.get(publication.topic) is publication.mirror_entry:
                 del self._mirror[publication.topic]
-            self._end_unconfirmed(publication)
+            if not publication.retain:
+                publication.fail(error)
         finally:
             publication.finish()
             session.inflight -= 1

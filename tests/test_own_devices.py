@@ -951,7 +951,7 @@ async def test_own_change_returns_before_puback_while_the_window_has_room(
     """
     await (await driver.create_device("foreign")).create_control("level", ControlType.VALUE, value=0)
     remote = await client.get_control("foreign/level")
-    controls = await window_of_controls(client)
+    controls = await window_of_controls(client, monkeypatch)
     device = controls[0].device
     release = asyncio.Event()
 
@@ -994,3 +994,162 @@ async def test_own_change_right_before_close_reaches_the_broker(
     assert await read_retained(broker.port, "/devices/dev/controls/temp") == {
         "/devices/dev/controls/temp": b"2"
     }
+
+
+async def test_unexpected_error_on_the_way_to_paho_reaches_the_caller_and_changes_nothing(
+    broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    set_value, set_error and update_meta raise the error as it is. The value, the error, the meta and their
+    events stay as they were, and after reconnect the broker gets the old state.
+    """
+    temp = await (await client.create_device("dev")).create_control("temp", ControlType.VALUE, value=1)
+    events: list = []
+    temp.on_value(lambda control, value, previous: events.append(("value", value)))
+    temp.on_error(lambda control, error, previous: events.append(("error", error)))
+    temp.on_meta(lambda control: events.append("meta"))
+    await wait_until(lambda: events == [("value", 1)])
+
+    async def fail(send: Send, topic: str, _payload: Any) -> None:
+        if topic.startswith("/devices/dev/controls/temp"):
+            raise RuntimeError("broken paho")
+        await send()
+
+    intercept_publish(monkeypatch, fail)
+    with pytest.raises(RuntimeError):
+        await temp.set_value(2)
+    with pytest.raises(RuntimeError):
+        await temp.set_error(ControlErrorFlags.READ)
+    with pytest.raises(RuntimeError):
+        await temp.update_meta(units="V")
+    monkeypatch.undo()
+
+    assert temp.value == 1 and temp.error == ControlErrorFlags.NONE and temp.meta.units is None
+    await restart_broker(broker, client)
+    value_topic = "/devices/dev/controls/temp"
+    await wait_retained(broker.port, value_topic, {value_topic: b"1"})
+    retained = await read_retained(broker.port, f"{value_topic}/meta/#")
+    assert list(retained) == [f"{value_topic}/meta"] and "units" not in json.loads(
+        retained[f"{value_topic}/meta"]
+    )
+    assert events == [("value", 1)]
+
+
+async def test_value_that_waited_in_the_queue_is_taken_at_once_and_a_later_error_is_not_raised(
+    client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    With the window full a value waits in the queue, the control takes it at once. An unexpected error when
+    it goes to paho later does not reach the caller, it is only logged.
+    """
+    controls = await window_of_controls(client, monkeypatch)
+    queued = controls[0]
+    release = asyncio.Event()
+    failures: list[str] = []
+
+    async def confirm_late_and_fail_the_queued(send: Send, topic: str, _payload: Any) -> None:
+        if topic == "/devices/dev/controls/c0":
+            failures.append(topic)
+            raise RuntimeError("broken paho")
+        await send()
+        await release.wait()
+
+    intercept_publish(monkeypatch, confirm_late_and_fail_the_queued)
+    # Twenty values the broker does not confirm yet fill the window
+    for control in controls[1:]:
+        await wait_or_dump(control.set_value(1), timeout=1)
+    await wait_or_dump(controls[1].set_value(2), timeout=1)
+    held = asyncio.ensure_future(queued.set_value(1))
+    await asyncio.sleep(0.2)
+    assert not held.done() and queued.value == 1
+
+    release.set()
+    await wait_or_dump(held, timeout=5)
+    assert failures and queued.value == 1
+
+
+async def test_unexpected_error_of_a_command_or_a_press_reaches_the_caller_as_it_is(
+    driver: Client, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A command to a foreign control and a press of an own button raise the error itself, not
+    BrokerDisconnectedError. The press is no event.
+    """
+    await (await driver.create_device("foreign")).create_control("level", ControlType.VALUE, value=0)
+    remote = await client.get_control("foreign/level")
+    button = await (await client.create_device("dev")).create_control("button", ControlType.PUSHBUTTON)
+    presses: list = []
+    button.on_value(lambda control, value, previous: presses.append(value))
+
+    async def fail(_send: Send, _topic: str, _payload: Any) -> None:
+        raise RuntimeError("broken paho")
+
+    intercept_publish(monkeypatch, fail)
+    with pytest.raises(RuntimeError):
+        await remote.set_value(5)
+    with pytest.raises(RuntimeError):
+        await button.set_value(True)
+    await asyncio.sleep(0.2)
+
+    assert not presses
+
+
+async def test_create_control_that_fails_on_the_way_to_paho_is_taken_back(
+    connect: ConnectClient, broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The value of a new control fails on the way to paho after its meta went out. create_control raises
+    the error as it is, the control does not appear and the broker loses the meta again.
+    """
+    device = await client.create_device("dev")
+    added: list = []
+    device.on_control_added(added.append)
+    watcher = await connect("watcher")
+    seen: list[tuple[str, bytes]] = []
+    await watcher.raw.subscribe(
+        "/devices/dev/controls/temp/#", lambda message: seen.append((message.topic, message.payload))
+    )
+
+    async def fail_the_value(send: Send, topic: str, _payload: Any) -> None:
+        if topic == "/devices/dev/controls/temp":
+            raise RuntimeError("broken paho")
+        await send()
+
+    intercept_publish(monkeypatch, fail_the_value)
+    with pytest.raises(RuntimeError):
+        await device.create_control("temp", ControlType.VALUE, value=21)
+
+    assert "temp" not in device.controls
+    await wait_until(lambda: ("/devices/dev/controls/temp/meta", b"") in seen)
+    assert await read_retained(broker.port, "/devices/dev/controls/#") == {}
+    assert not added
+
+
+async def test_remove_that_fails_on_the_way_to_paho_is_taken_back(
+    connect: ConnectClient, broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The erasure of the error fails after the erasure of the value went out. remove raises the error as it is,
+    the control stays and the broker gets the value back.
+    """
+    device = await client.create_device("dev")
+    temp = await device.create_control("temp", ControlType.VALUE, value=21, error=ControlErrorFlags.READ)
+    watcher = await connect("watcher")
+    values: list[bytes] = []
+    await watcher.raw.subscribe("/devices/dev/controls/temp", lambda message: values.append(message.payload))
+    await wait_until(lambda: values == [b"21"])
+
+    async def fail_the_error_erasure(send: Send, topic: str, payload: Any) -> None:
+        if topic.endswith("/meta/error") and not payload:
+            raise RuntimeError("broken paho")
+        await send()
+
+    intercept_publish(monkeypatch, fail_the_error_erasure)
+    with pytest.raises(RuntimeError):
+        await temp.remove()
+
+    assert temp.exists and temp.value == 21 and temp.error == ControlErrorFlags.READ
+    await wait_until(lambda: values == [b"21", b"", b"21"])
+    retained = await read_retained(broker.port, "/devices/dev/controls/temp/#")
+    assert retained["/devices/dev/controls/temp"] == b"21"
+    assert retained["/devices/dev/controls/temp/meta/error"] == b"r"

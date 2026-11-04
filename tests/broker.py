@@ -88,6 +88,9 @@ def control_object(client: Any, full_name: str) -> Any:
 # Hands the packet to paho and waits for PUBACK, as aiomqtt.Client.publish does
 Send = Callable[[], Awaitable[None]]
 
+# Send window of the tests that fill it, 20 controls fill it instead of the 1000 of the client
+TEST_SEND_WINDOW = 20
+
 
 def intercept_publish(monkeypatch: Any, intercept: Callable[[Send, str, Any], Awaitable[None]]) -> None:
     """
@@ -429,11 +432,12 @@ async def wait_retained(
     return retained
 
 
-async def window_of_controls(client: Any) -> list[Any]:
+async def window_of_controls(client: Any, monkeypatch: Any) -> list[Any]:
     """
-    Own controls c0, c1 and so on of the device dev, as many as the client keeps waiting for PUBACK at once,
-    of type value with the value 0.
+    Shrink the send window to TEST_SEND_WINDOW and create own controls c0, c1 and so on of the device dev,
+    as many as the window holds, of type value with the value 0.
     """
+    monkeypatch.setattr(broker_connection, "SEND_WINDOW", TEST_SEND_WINDOW)
     device = await client.create_device("dev")
     return [
         await device.create_control(f"c{index}", ControlType.VALUE, value=0)

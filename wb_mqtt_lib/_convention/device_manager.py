@@ -2,8 +2,8 @@
 Device manager of a client. Foreign devices are read from the broker, own devices are published and take
 commands, the state lives in state.py.
 
-An operation on an own device changes the state and the publisher mirror without an await in between
-and only then waits for the broker, so a cancelled call never leaves a change half sent.
+An operation on an own device puts the change into the publisher mirror and then into the state without
+an await in between and only then waits for the broker, so a cancelled call never leaves a change half sent.
 """
 
 import asyncio
@@ -184,12 +184,12 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         title = TranslatedTitle.parse(title)
         if title == device.title:
             return
-        self.state.set_device_meta(name, DeviceMeta(title, self._driver))
+        meta = DeviceMeta(title, self._driver)
         # Waits for PUBACK, then a reader of the name nearly always gets the echo before a remove() that
         # follows. An echo of the meta after it brings the name back as a foreign device.
-        await self._publisher.publish(
-            device.topics.meta, self._get_device_meta_json(device), qos=1, retain=True
-        )
+        published = self._publisher.put_retained([(device.topics.meta, meta.to_json())])
+        self.state.set_device_meta(name, meta)
+        await self._wait_for_broker(published)
 
     async def remove_device(self, name: str) -> None:
         # A second call does nothing
@@ -212,9 +212,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             to_erase.append(device.topics.error)
         to_erase.append(device.topics.meta)
 
-        # Removed before the erasure, so its echoes apply like those of a foreign device
-        self.state.mark_device_removed(name)
+        # Removed in the same step as the erasure, so its echoes apply like those of a foreign device
         erasure_done = self._erase(self._add_own_topics_under(to_erase, topics.device_root(name)))
+        self.state.mark_device_removed(name)
         await self._wait_for_broker(
             self._tasks.start_task(self._unsubscribe_commands_after(name, erasure_done), f"remove {name}")
         )
@@ -261,21 +261,26 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
                 raise TypeError(f"a pushbutton takes no initial value, got {value!r}")
             payload, normalized_value = to_payload_and_value(meta, value)
 
-        # Every check passed, the control goes into the state and the queue
+        # Every check passed. Meta, error and value go out in this order, a reader that gets the value knows
+        # of the error already.
+        messages: list[tuple[str, Optional[str]]] = [(control_topics.meta, meta.to_json())]
+        if error:
+            messages.append((control_topics.error, error.to_mqtt()))
+        if payload is not None:
+            messages.append((control_topics.value, payload))
+        published = self._publisher.put_retained(messages)
+
+        # The control goes into the state
         device.next_order = max(device.next_order, meta.order + 1)
         self.state.mark_control_added(device_name, control_name, meta)
         control = device.controls[control_name]
         control.topics = control_topics
-        # Meta, error and value in this order, a reader that gets the value knows of the error already
-        messages: list[tuple[str, Optional[str]]] = [(control.topics.meta, meta.to_json())]
         if error:
             self.state.set_control_error(device_name, control_name, error)
-            messages.append((control.topics.error, error.to_mqtt()))
         if payload is not None:
             control.payload = payload
             self.state.set_control_value(device_name, control_name, normalized_value)
-            messages.append((control.topics.value, payload))
-        await self._wait_for_broker(self._publisher.queue_retained(messages))
+        await self._wait_for_broker(published)
 
     async def set_control_value(self, device_name: str, control_name: str, value: Any) -> None:
         self._raise_if_closed()
@@ -304,13 +309,13 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
 
         # Own control of another type, the payload goes out only when it changed
         payload, normalized_value = to_payload_and_value(control.meta, value)
-        changed = payload != control.payload
+        published = None
+        if payload != control.payload:
+            published = self._publisher.put_retained([(control.topics.value, payload)], wait_for_puback=False)
         control.payload = payload
         self.state.set_control_value(device_name, control_name, normalized_value)
-        if changed:
-            await self._publisher.publish(
-                control.topics.value, payload, qos=1, retain=True, wait_for_puback=False
-            )
+        if published is not None:
+            await self._wait_for_broker(published)
 
     async def set_control_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
         _check_error_flags(error)
@@ -318,16 +323,18 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         control = self._require_existing_control(device_name, control_name)
         if error == control.error:
             return
+        published = self._put_error(control.topics.error, error)
         self.state.set_control_error(device_name, control_name, error)
-        await self._publish_error(control.topics.error, error)
+        await self._wait_for_broker(published)
 
     async def set_device_error(self, name: str, error: ControlErrorFlags) -> None:
         _check_error_flags(error)
         device = self._require_own_device(name)
         if error == device.error:
             return
+        published = self._put_error(device.topics.error, error)
         self.state.set_device_error(name, error)
-        await self._publish_error(device.topics.error, error)
+        await self._wait_for_broker(published)
 
     async def update_control_meta(self, device_name: str, control_name: str, **fields: Any) -> None:
         self._require_own_device(device_name)
@@ -335,9 +342,10 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         updated = dataclasses.replace(control.meta, **parse_meta_fields(fields))
         if updated == control.meta:
             return
-        self.state.set_control_meta(device_name, control_name, updated)
         # Waits for PUBACK like the meta of the device
-        await self._publisher.publish(control.topics.meta, updated.to_json(), qos=1, retain=True)
+        published = self._publisher.put_retained([(control.topics.meta, updated.to_json())])
+        self.state.set_control_meta(device_name, control_name, updated)
+        await self._wait_for_broker(published)
 
     async def remove_control(self, device_name: str, control_name: str) -> None:
         self._raise_if_closed()
@@ -349,8 +357,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         if control is None or not control.exists:
             return
         to_erase = self._add_own_topics_under(_get_control_topics_to_erase(control), control.topics.value)
+        erased = self._erase(to_erase)
         self.state.mark_control_removed(device_name, control_name)
-        await self._wait_for_broker(self._erase(to_erase))
+        await self._wait_for_broker(erased)
 
     async def remove_driver_devices(self) -> list[str]:
         self._raise_if_closed()
@@ -508,14 +517,15 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         if leftovers:
             await self._erase_leftovers(leftovers)
 
-        # The name becomes own unless another create_device took it meanwhile
+        # The name becomes own unless another create_device took it meanwhile. The meta goes out first.
         device = self.state.ensure_device(name)
         _check_not_created(name, device)
+        meta = DeviceMeta(title, self._driver)
+        published = self._publisher.put_retained([(device_topics.meta, meta.to_json())])
         self.state.make_device_own(name, title, self._driver)
         device.topics = device_topics
 
-        # The meta goes out, the commands get subscribed, waits for the device end
-        published = self._publisher.queue_retained([(device.topics.meta, self._get_device_meta_json(device))])
+        # The commands get subscribed, waits for the device end
         subscribed = self._tasks.start_task(self._subscribe_commands(name), f"subscribe commands of {name}")
         self.state.wake_device_waits(name)
         await asyncio.gather(published, subscribed)
@@ -573,13 +583,8 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             raise ControlMissingError(f"{device_name}/{control_name} does not exist")
         return control
 
-    def _get_device_meta_json(self, device: DeviceRecord) -> str:
-        return DeviceMeta(device.title, self._driver).to_json()
-
-    async def _publish_error(self, topic: str, error: ControlErrorFlags) -> None:
-        await self._publisher.publish(
-            topic, error.to_mqtt() or None, qos=1, retain=True, wait_for_puback=False
-        )
+    def _put_error(self, topic: str, error: ControlErrorFlags) -> asyncio.Future:
+        return self._publisher.put_retained([(topic, error.to_mqtt() or None)], wait_for_puback=False)
 
     def _add_own_topics_under(self, to_erase: list[str], root: str) -> list[str]:
         """
@@ -598,7 +603,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         staged = sorted(
             ((topic, topics.erasure_order(topic)[0]) for topic in to_erase), key=lambda item: item[1]
         )
-        return self._publisher.queue_erasure(staged)
+        return self._publisher.put_erasure(staged)
 
     def _erase_leftovers(self, leftovers: dict[str, bytes]) -> asyncio.Future:
         return self._erase(sorted(leftovers, key=topics.erasure_order))

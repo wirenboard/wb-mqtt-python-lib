@@ -8,8 +8,9 @@ The publication queue and the subscriptions rely on three properties of aiomqtt 
 2. A lost answer and a broken link differ. aiomqtt ends a wait for PUBACK that runs out with a plain
    MqttError while paho still takes packets, and a call paho refuses with MqttCodeError. Only the first
    is worth sending again on the same connection. Here they become AckTimeout and LinkLost.
-3. Window. paho keeps at most 20 QoS 1 publications without PUBACK and queues the rest. A wait for PUBACK
-   starts when the packet is handed to paho, so more than SEND_WINDOW at once would run out in that queue.
+3. Window. paho keeps at most max_inflight_messages QoS 1 publications without PUBACK and queues the rest.
+   A wait for PUBACK starts when the packet is handed to paho and would run out in that queue. So paho gets
+   SEND_WINDOW as its limit, and the publisher hands it no more than that at once.
 
 aiomqtt does not end the waits for PUBACK when the connection drops, they end by ACK_TIMEOUT_S.
 """
@@ -34,8 +35,9 @@ TopicMatcher = MQTTMatcher
 KEEPALIVE_S = 15
 # Deadline for a broker acknowledgement
 ACK_TIMEOUT_S = 5.0
-# Publications waiting for PUBACK at once, the limit of paho, see the module docstring
-SEND_WINDOW = 20
+# Publications waiting for PUBACK at once, max_inflight_messages of the broker in
+# /usr/share/wb-configs/mosquitto/30limits.conf, see the module docstring
+SEND_WINDOW = 1000
 # Every handler publishes on its own, a burst easily has dozens of publications waiting for the broker,
 # and aiomqtt warns about each one above this number
 PENDING_CALLS_WARNING = 10_000
@@ -111,6 +113,7 @@ class Connection:
             protocol=aiomqtt.ProtocolVersion.V5,
             keepalive=KEEPALIVE_S,
             timeout=ACK_TIMEOUT_S,
+            max_inflight_messages=SEND_WINDOW,
             logger=_logger,
         )
         self._mqtt_client.pending_calls_threshold = PENDING_CALLS_WARNING

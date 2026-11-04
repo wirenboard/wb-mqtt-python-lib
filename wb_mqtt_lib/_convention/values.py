@@ -44,7 +44,7 @@ class ControlType(StrEnum):
 
 _BOOLEAN_TYPES = frozenset({ControlType.SWITCH, ControlType.ALARM, ControlType.WO_SWITCH})
 _NUMBER_TYPES = frozenset({ControlType.VALUE, ControlType.RANGE})
-# Deprecated types of the convention derived from value and their units, as the convention and homeui list them
+# Deprecated types derived from value and their units, as the convention and homeui list them
 _DEPRECATED_TYPE_UNITS = {
     "temperature": "deg C",
     "rel_humidity": "%, RH",

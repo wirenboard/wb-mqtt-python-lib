@@ -176,8 +176,8 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         Set the value of an own control or send a command to /on of a foreign one.
 
-        An own control takes the value at once and publishes it when it changed, a pushbutton press every
-        time. A foreign control changes when its driver publishes the value.
+        An own control publishes the value when it changed and takes it at once, a pushbutton press goes out
+        every time. A foreign control changes when its driver publishes the value.
 
         switch, alarm and wo-switch take bool, a pushbutton only True, value and range a finite number,
         local_time and w1-id an int, rgb three ints from 0 to 255, text a str.
@@ -192,6 +192,8 @@ class Control:  # pylint: disable=too-many-public-methods
             BrokerDisconnectedError: a command or a pushbutton press while the broker link is down,
                 or the link is lost or the broker does not confirm it in 5 s.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The value
+                of an own control stays as it was, and a press is no event.
         """
         await self._device_manager.set_control_value(self.device.name, self.name, value)
 
@@ -204,6 +206,8 @@ class Control:  # pylint: disable=too-many-public-methods
             NotOwnError: the control is foreign.
             ControlMissingError: the control or its device does not exist.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The error
+                stays as it was.
         """
         await self._device_manager.set_control_error(self.device.name, self.name, error)
 
@@ -221,6 +225,8 @@ class Control:  # pylint: disable=too-many-public-methods
             NotOwnError: the control is foreign.
             ControlMissingError: the control or its device does not exist.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The meta
+                stays as it was.
         """
         await self._device_manager.update_control_meta(self.device.name, self.name, **fields)
 
@@ -235,6 +241,8 @@ class Control:  # pylint: disable=too-many-public-methods
         Raises:
             NotOwnError: the control is foreign.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. Nothing
+                changes, what went out already is taken back.
         """
         await self._device_manager.remove_control(self.device.name, self.name)
 
@@ -444,6 +452,8 @@ class Device:  # pylint: disable=too-many-public-methods
             NotOwnError: the device is foreign.
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. Nothing
+                changes, what went out already is taken back.
         """
         await self._device_manager.create_control(
             self.name,
@@ -473,6 +483,8 @@ class Device:  # pylint: disable=too-many-public-methods
             NotOwnError: the device is foreign.
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The error
+                stays as it was.
         """
         await self._device_manager.set_device_error(self.name, error)
 
@@ -486,6 +498,8 @@ class Device:  # pylint: disable=too-many-public-methods
             NotOwnError: the device is foreign.
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The meta
+                stays as it was.
         """
         await self._device_manager.update_device_meta(self.name, title)
 
@@ -502,6 +516,8 @@ class Device:  # pylint: disable=too-many-public-methods
         Raises:
             NotOwnError: the device is foreign.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. Nothing
+                changes, what went out already is taken back.
         """
         await self._device_manager.remove_device(self.name)
 

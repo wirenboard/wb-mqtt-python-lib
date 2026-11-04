@@ -17,6 +17,7 @@ import pytest
 from tests.broker import (
     BROKER_READS,
     FIRST_VALUE_META,
+    TEST_SEND_WINDOW,
     DeadLinkProxy,
     MosquittoBroker,
     Send,
@@ -65,6 +66,7 @@ class PublishLog:
     """
     What the clients of a test hand to paho under /devices, in that order. While slow, every publication
     holds its place in the window of the client a moment after PUBACK, so the queue behind it waits.
+    The window is TEST_SEND_WINDOW, so the replay of a few controls fills it.
     """
 
     sent: list[tuple[str, Any]] = field(default_factory=list)
@@ -77,6 +79,7 @@ def publish_log(monkeypatch: pytest.MonkeyPatch) -> Iterator[PublishLog]:
     Log of the publications of every client in the test, see PublishLog.
     """
     log = PublishLog()
+    monkeypatch.setattr(broker_connection, "SEND_WINDOW", TEST_SEND_WINDOW)
 
     async def logged(send: Send, topic: str, payload: Any) -> None:
         if topic.startswith("/devices/"):
@@ -619,7 +622,7 @@ async def test_queued_event_without_puback_in_time_fails_and_does_not_go_again(
     commands: list[bool] = []
     relay.on_command(lambda control, value: commands.append(value))
     remote = await client.get_control("relays/K1")
-    controls = await window_of_controls(client)
+    controls = await window_of_controls(client, monkeypatch)
     release = asyncio.Event()
     lost: list[str] = []
 
