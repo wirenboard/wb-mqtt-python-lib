@@ -134,7 +134,8 @@ class Control:  # pylint: disable=too-many-public-methods
 
     def on_command(self, handler: CommandHandler) -> CommandHandler:
         """
-        Only for an own control. handler(control, value) for a command from /on.
+        Only for an own control. handler(control, value) for a command from /on, value of the control type.
+        A command fits when set_value would take it, one that does not is dropped with a warning in the log.
 
         The handler may be added before the control exists, after remove() it waits until the service
         creates the control again. It decides what to publish, a command without a handler is dropped.

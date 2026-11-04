@@ -484,14 +484,15 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
 
 def parse_value(meta: ControlMeta, payload: str) -> Any:
     """
-    String from a topic turned into a value by the control type, as control.value has it.
+    String from a topic or a command turned into a value by the control type, as control.value has it.
 
-    A string that does not parse stays a string, and so does the value of an unknown type.
+    switch, alarm and wo-switch read «0» as False and any other finite number as True. A string that does
+    not parse stays a string, and so does the value of an unknown type.
     """
     control_type = meta.control_type
     try:
         if control_type in _BOOLEAN_TYPES:
-            return float(payload) != 0
+            return _parse_bool(payload)
         if control_type in _NUMBER_TYPES:
             return _parse_number(payload)
         if control_type in _INTEGER_TYPES:
@@ -525,6 +526,15 @@ def _parse_number(payload: str) -> Union[int, float]:
         return int(payload)
     except ValueError:
         return float(payload)
+
+
+def _parse_bool(payload: str) -> bool:
+    # The convention writes a switch as «1» or «0». Another number is True, as wb-mqtt-serial writes it
+    # into a coil and wb-rules reads it.
+    number = _parse_number(payload)
+    if not _is_finite(number):
+        raise ValueError(f"a finite number expected, got {payload!r}")
+    return number != 0
 
 
 # ------------------------------------------------------------

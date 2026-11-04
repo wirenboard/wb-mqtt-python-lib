@@ -40,6 +40,7 @@ from wb_mqtt_lib import (
     [
         ({"type": "switch"}, "1", True),
         ({"type": "switch"}, "0", False),
+        ({"type": "switch"}, "2", True),
         ({"type": "value"}, "21.5", 21.5),
         ({"type": "value"}, "7", 7),
         ({"type": "value", "precision": 0.1}, "21.54", 21.54),
@@ -52,6 +53,7 @@ from wb_mqtt_lib import (
     ids=[
         "switch on",
         "switch off",
+        "switch other than 1 and 0",
         "float",
         "int",
         "precision",
@@ -648,12 +650,12 @@ async def test_value_and_error_that_came_before_the_meta_show_once_the_control_a
     ],
     ids=["value", "switch", "local_time", "rgb"],
 )
-async def test_payload_that_does_not_parse_comes_as_a_string(
+async def test_value_that_does_not_parse_comes_as_a_string_and_such_a_command_is_dropped(
     driver: Client, client: Client, case: tuple[str, str, str, object]
 ) -> None:
     """
-    A value or a command that does not parse by the type reaches the service as the string from the topic,
-    the next good one comes typed again.
+    A value that does not parse by the type reaches the service as the string from the topic, a command
+    that does not parse is dropped. The next good one of each comes typed.
     """
     control_type, garbage, good, expected = case
     base = "/devices/dev/controls/ctl"
@@ -668,7 +670,7 @@ async def test_payload_that_does_not_parse_comes_as_a_string(
         await driver.raw.publish(base, payload, retain=True)
         await client.raw.publish(f"{base}/on", payload)
 
-    await wait_until(lambda: values == [garbage, expected] and commands == [garbage, expected])
+    await wait_until(lambda: values == [garbage, expected] and commands == [expected])
 
 
 @pytest.mark.parametrize(

@@ -317,7 +317,7 @@ async def test_retained_command_is_erased_and_live_command_reaches_handler(
     assert not commands
 
     await other.raw.publish("/devices/test_dev/controls/relay/on", "")
-    await other.raw.publish("/devices/test_dev/controls/relay/on", "2")
+    await other.raw.publish("/devices/test_dev/controls/relay/on", "1")
     await wait_until(lambda: commands == [True])
 
 
@@ -336,6 +336,55 @@ async def test_command_to_an_own_pushbutton_comes_as_true(connect: ConnectClient
 
     await wait_until(lambda: len(commands) == 2)
     assert sorted(commands) == [("control", True), ("device", True)]
+
+
+# A command to a control of the type and the value on_command gets, None for one that is dropped
+TYPED_COMMANDS = [
+    (ControlType.SWITCH, "1", True),
+    (ControlType.SWITCH, "0", False),
+    (ControlType.SWITCH, "2", True),
+    (ControlType.SWITCH, "0.0", False),
+    (ControlType.SWITCH, "on", None),
+    (ControlType.SWITCH, "nan", None),
+    (ControlType.VALUE, "21", 21),
+    (ControlType.VALUE, "21.5", 21.5),
+    (ControlType.VALUE, "abc", None),
+    (ControlType.VALUE, "nan", None),
+    (ControlType.RANGE, "inf", None),
+    (ControlType.RGB, "255;0;10", (255, 0, 10)),
+    (ControlType.RGB, "256;0;0", None),
+    (ControlType.RGB, "1;2", None),
+    (ControlType.LOCAL_TIME, "1700000000", 1700000000),
+    (ControlType.LOCAL_TIME, "1.5", None),
+    (ControlType.W1_ID, "7", 7),
+    (ControlType.TEXT, "abc", "abc"),
+]
+
+
+async def test_command_comes_by_the_control_type_and_one_that_does_not_fit_is_dropped(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    on_control_command gets a command as the value of the control type. A command that does not fit
+    the type, NaN and infinity among them, reaches no handler.
+    """
+    device = await client.create_device("dev")
+    for index, (control_type, _, _) in enumerate(TYPED_COMMANDS):
+        await device.create_control(f"c{index}", control_type)
+    await device.create_control("last", ControlType.TEXT)
+    commands: list[tuple[str, Any]] = []
+    device.on_control_command(lambda control, value: commands.append((control.name, value)))
+    user = await connect("user")
+
+    for index, (_, payload, _) in enumerate(TYPED_COMMANDS):
+        await user.raw.publish(f"/devices/dev/controls/c{index}/on", payload)
+    await user.raw.publish("/devices/dev/controls/last/on", "done")
+
+    await wait_until(lambda: commands[-1:] == [("last", "done")])
+    expected = [
+        (f"c{index}", value) for index, (_, _, value) in enumerate(TYPED_COMMANDS) if value is not None
+    ]
+    assert commands == [*expected, ("last", "done")]
 
 
 @pytest.mark.parametrize("offline", [False, True], ids=["online", "offline"])

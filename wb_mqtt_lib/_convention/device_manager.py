@@ -493,10 +493,25 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             logger.debug("Command to %s/%s has no command handler", topic.device, topic.control)
             return
 
-        # A press is always True, another command is parsed by the meta
-        is_press = control.meta.control_type == ControlType.PUSHBUTTON
-        value = True if is_press else parse_value(control.meta, payload)
-        self.state.emit_command(topic.device, topic.control, value)
+        # A press is always True. Another command is parsed by the type of the control and fits when set_value
+        # would take it, one that does not fit is dropped as wb-mqtt-serial does.
+        if control.meta.control_type == ControlType.PUSHBUTTON:
+            value = True
+        else:
+            value = parse_value(control.meta, payload)
+            _warn_if_converted_to_bool(value, payload, topic.device, topic.control)
+        try:
+            to_payload_and_value(control.meta, value)
+        except TypeError:
+            logger.warning(
+                "Command %r to %s/%s does not fit the type %s, skipped",
+                payload[:200],
+                topic.device,
+                topic.control,
+                control.meta.control_type,
+            )
+        else:
+            self.state.emit_command(topic.device, topic.control, value)
 
     # ------------------------------------------------------------
     # Helpers
@@ -814,14 +829,24 @@ def _apply_value(  # pylint: disable=too-many-arguments,too-many-positional-argu
     # The payload is kept, the value is parsed by the meta, now or once the meta comes
     control.payload = payload or None
     if control.meta is not None:
-        state.set_control_value(
-            device_name,
-            control_name,
-            parse_value(control.meta, payload) if payload else None,
-            notify_unchanged=not resent,
-        )
+        value = parse_value(control.meta, payload) if payload else None
+        _warn_if_converted_to_bool(value, payload, device_name, control_name)
+        state.set_control_value(device_name, control_name, value, notify_unchanged=not resent)
     elif not payload:
         state.drop_control_if_unused(device_name, control_name)
+
+
+def _warn_if_converted_to_bool(value: Any, payload: str, device_name: str, control_name: str) -> None:
+    # The convention writes a switch as «1» or «0», another number is converted to True and its sender shows
+    # in the log
+    if isinstance(value, bool) and payload not in ("0", "1"):
+        logger.warning(
+            "Converted %r of %s/%s to %s, expected «1» or «0»",
+            payload[:200],
+            device_name,
+            control_name,
+            value,
+        )
 
 
 def _build_state(retained: dict[str, bytes]) -> State:
