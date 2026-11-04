@@ -177,10 +177,11 @@ class Control:  # pylint: disable=too-many-public-methods
         Set the value of an own control or send a command to /on of a foreign one.
 
         An own control publishes the value when it changed and takes it at once, a pushbutton press goes out
-        every time. A foreign control changes when its driver publishes the value.
+        every time. None erases the value of an own control other than a pushbutton. A foreign control changes
+        when its driver publishes the value.
 
         switch, alarm and wo-switch take bool, a pushbutton only True, value and range a finite number,
-        local_time and w1-id an int, rgb three ints from 0 to 255, text a str.
+        local_time and w1-id an int, rgb three ints from 0 to 255, text a non-empty str.
 
         A change of an own control usually returns without waiting for the broker. A command and a press
         return once the broker confirmed them.

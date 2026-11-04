@@ -407,8 +407,8 @@ device.create_control("ctl", ...)
     вызывающий получает ошибку как есть
   → State.set_control_value, события on_value
   → ожидание брокера, только если окно полно или в очереди есть публикации
-  → "" в text уходит пустым retained, MQTT не хранит пустое retained-сообщение. У своего контрола
-    value остаётся "", у читателей становится None
+  → None стирает значение пустым retained, value становится None, события нет. "" не принимается,
+    MQTT не хранит пустое retained-сообщение, и пустое значение у своих и у читателей это None
   → set_error своего устройства публикуется так же, update_meta ждёт PUBACK
 
 Publisher.publish, put_retained и put_erasure, общий Publisher._put
@@ -511,7 +511,7 @@ close()
 | длина топиков своего устройства и контрола | `checks.CheckedTopic` в `DeviceManager.create_device` и `create_control` | имя, с которым `/meta/error` устройства или контрола длиннее 65535 байт |
 | символы, которые брокер не примет | `checks.is_refused_by_broker` | C0, DEL, C1, суррогаты, нехарактеры Unicode. Правила те же, что у `mosquitto_validate_utf8` в брокере, своя реализация на Python |
 | поля меты своего контрола | `values.parse_meta_fields` | неизвестные поля, неверные типы, нечисловые и бесконечные `precision`, `minimum`, `maximum`, неположительный `precision`, неверные заголовок и enum, тексты без UTF-8 |
-| значение на запись | `values.to_payload_and_value` | тип не по контролу, целое вместо bool, NaN, бесконечность и целое больше float в числе, текст без UTF-8 |
+| значение на запись | `values.to_payload_and_value` | тип не по контролу, целое вместо bool, NaN, бесконечность и целое больше float в числе, текст без UTF-8, пустая строка, `None` в команде чужому |
 | топик, фильтр, QoS, тело | `checks.check_topic`, `checks.check_filter`, `checks.check_qos`, `checks.check_payload` | маски не на своём месте, `$share/`, больше 200 косых, больше 65535 байт, символы из `is_refused_by_broker` |
 | адрес брокера | `broker_url.parse_broker_url` | схема не `unix`, `tcp`, `mqtt-tcp` или `ws`, нет хоста или порта, `?` или `#`, `unix://` с хостом, логин с символами из `is_refused_by_broker` |
 

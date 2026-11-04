@@ -11,6 +11,7 @@ from tests.broker import (
     MosquittoBroker,
     publish_retained,
     read_retained,
+    restart_broker,
     wait_retained,
     wait_until,
 )
@@ -65,9 +66,6 @@ INITIAL = {
 }
 
 REFUSED = [
-    (ControlType.VALUE, None),
-    (ControlType.SWITCH, None),
-    (ControlType.TEXT, None),
     (ControlType.VALUE, True),
     (ControlType.VALUE, "5"),
     (ControlType.VALUE, float("nan")),
@@ -91,6 +89,7 @@ REFUSED = [
     (ControlType.W1_ID, True),
     (ControlType.TEXT, "a\udcff"),
     (ControlType.TEXT, 42),
+    (ControlType.TEXT, ""),
 ]
 
 
@@ -124,10 +123,10 @@ async def test_value_of_another_type_is_refused_before_publication(
     broker: MosquittoBroker, connect: ConnectClient, client: Client
 ) -> None:
     """
-    A value that does not fit the type, None among them, raises TypeError, the current value stays
+    A value that does not fit the type, an empty text among them, raises TypeError, the current value stays
     in the broker and in the object.
 
-    A command to a foreign control is checked the same way.
+    A command to a foreign control is checked the same way, and None is no command.
     """
     device = await client.create_device("dev")
     controls = []
@@ -144,8 +143,9 @@ async def test_value_of_another_type_is_refused_before_publication(
         assert control.value == INITIAL.get(control_type, (None, None))[0], (control_type, value)
     reader = await connect("reader")
     remote = await reader.get_control("dev/c0")
-    with pytest.raises(TypeError):
-        await remote.set_value("5")
+    for value in ("5", None):
+        with pytest.raises(TypeError):
+            await remote.set_value(value)
     await wait_retained(broker.port, "/devices/dev/controls/+", expected)
 
 
@@ -298,25 +298,33 @@ async def test_enum_of_the_meta_is_read_only(broker: MosquittoBroker, client: Cl
     await wait_retained(broker.port, meta_topic, {meta_topic: json.dumps(meta).encode()})
 
 
-async def test_empty_text_erases_the_retained_value_and_stays_empty_locally(
-    broker: MosquittoBroker, connect: ConnectClient, client: Client
+@pytest.mark.parametrize("control_type", [ControlType.VALUE, ControlType.SWITCH, ControlType.TEXT])
+async def test_none_erases_the_own_value(
+    broker: MosquittoBroker, connect: ConnectClient, client: Client, control_type: ControlType
 ) -> None:
     """
-    An empty string in text erases the retained value, MQTT keeps no empty retained message. The own value
-    becomes "", a reader has None. A text set afterwards goes out as usual.
+    set_value(None) erases the retained value. The value becomes None without an event, a reader has None
+    too, and the value does not come back after reconnect. A value set again goes out as usual.
     """
-    status = await (await client.create_device("dev")).create_control("status", ControlType.TEXT, value="on")
+    initial = {ControlType.VALUE: 5, ControlType.SWITCH: True, ControlType.TEXT: "on"}[control_type]
+    control = await (await client.create_device("dev")).create_control("c", control_type, value=initial)
+    events: list = []
+    control.on_value(lambda _control, value, previous: events.append(value))
+    await wait_until(lambda: events == [initial])
     reader = await connect("reader")
-    remote = await reader.get_control("dev/status")
-    assert remote.value == "on"
+    remote = await reader.get_control("dev/c")
+    assert remote.value == initial
 
-    await status.set_value("")
+    await control.set_value(None)
 
-    assert status.value == ""
-    await wait_retained(broker.port, "/devices/dev/controls/status", {})
+    assert control.value is None
+    await wait_retained(broker.port, "/devices/dev/controls/c", {})
     await wait_until(lambda: remote.value is None)
-    await status.set_value("off")
-    await wait_until(lambda: remote.value == "off")
+    await restart_broker(broker, client)
+    meta = f'{{"type": "{control_type}", "readonly": false, "hidden": false, "order": 1}}'.encode()
+    await wait_retained(broker.port, "/devices/dev/controls/c/#", {"/devices/dev/controls/c/meta": meta})
+    await control.set_value(initial)
+    await wait_until(lambda: events == [initial, initial])
 
 
 @pytest.mark.parametrize(

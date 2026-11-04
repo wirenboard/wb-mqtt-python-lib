@@ -307,8 +307,11 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
                 self.state.emit_pushbutton_press(device_name, control_name)
             return
 
-        # Own control of another type, the payload goes out only when it changed
-        payload, normalized_value = to_payload_and_value(control.meta, value)
+        # Own control of another type, the payload goes out only when it changed. None erases the value.
+        if value is None:
+            payload, normalized_value = None, None
+        else:
+            payload, normalized_value = to_payload_and_value(control.meta, value)
         published = None
         if payload != control.payload:
             published = self._publisher.put_retained([(control.topics.value, payload)], wait_for_puback=False)
