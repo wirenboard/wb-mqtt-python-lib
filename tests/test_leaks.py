@@ -232,17 +232,24 @@ async def test_values_and_errors_without_meta_under_new_names_leave_nothing(
     driver: Client, client: Client
 ) -> None:
     """
-    A driver publishes values without meta under ever new control names and erases them, and errors without
-    the letters r, w and p. The reader keeps no record for any of them.
+    A driver publishes under ever new control names without meta a value and erases it, an error with
+    a letter and clears it, or an error without the letters r, w and p. The reader keeps no record for any
+    of them.
     """
     known = await (await driver.create_device("dev")).create_control("known", ControlType.VALUE, value=-1)
     remote = await client.get_control("dev/known")
 
     async def cycle(index: int) -> None:
         topic = f"/devices/dev/controls/n{index}"
-        await driver.raw.publish(topic, "1", retain=True)
-        await driver.raw.publish(topic, "", retain=True)
-        await driver.raw.publish(f"{topic}/meta/error", "timeout")
+        # Each kind alone, so that no later message clears the record of an earlier one
+        if index % 3 == 0:
+            await driver.raw.publish(topic, "1", retain=True)
+            await driver.raw.publish(topic, "", retain=True)
+        elif index % 3 == 1:
+            await driver.raw.publish(f"{topic}/meta/error", "r", retain=True)
+            await driver.raw.publish(f"{topic}/meta/error", "", retain=True)
+        else:
+            await driver.raw.publish(f"{topic}/meta/error", "timeout")
         # Messages of one device arrive in order, so the erasure is applied once this value is
         await known.set_value(index)
         await remote.wait_value(index, timeout=5)

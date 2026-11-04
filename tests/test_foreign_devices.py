@@ -142,10 +142,16 @@ async def test_command_to_foreign_readonly_control_is_refused_until_readonly_is_
     )
     sent: list[Message] = []
     await driver.raw.subscribe("/devices/relays/controls/K1/on", sent.append)
+    barrier: list[Message] = []
+    await driver.raw.subscribe("/barrier", barrier.append)
     remote = await client.get_control("relays/K1")
 
     with pytest.raises(ReadonlyControlError):
         await remote.set_value(True)
+    # What the client sent before the error reaches the driver before this message
+    await client.raw.publish("/barrier", "1")
+    await wait_until(lambda: bool(barrier))
+    assert not sent
     await relay.update_meta(readonly=False)
     await wait_until(lambda: not remote.meta.readonly)
     await remote.set_value(True)
@@ -207,8 +213,9 @@ async def test_get_device_names_reads_once_without_keeping_subscriptions(
     driver: Client, client: Client
 ) -> None:
     """
-    Devices with JSON meta and devices known only by their controls, read once. Broken device meta
-    and control meta without a type make no device, as for a live object and a snapshot.
+    Devices with JSON meta and devices known only by their controls, read once. Broken device meta,
+    control meta without a type and a meta with an empty device name make no device, as for a live
+    object and a snapshot.
     """
     await driver.create_device("with_meta")
     await (await driver.create_device("with_controls")).create_control("ctl", ControlType.VALUE, value=1)
@@ -219,6 +226,7 @@ async def test_get_device_names_reads_once_without_keeping_subscriptions(
             "/devices/legacy/controls/state/meta": json.dumps({"type": "text"}),
             "/devices/broken/meta": "[",
             "/devices/untyped/controls/state/meta": json.dumps({"title": "State"}),
+            "/devices//meta": json.dumps({"driver": "nameless"}),
         },
     )
 
@@ -233,8 +241,9 @@ async def test_device_snapshot_has_the_fields_of_the_live_objects_and_stays_as_r
 ) -> None:
     """
     A snapshot of a device and of each control has the fields of Device and Control with the same values.
-    A retained value on a pushbutton is a leftover, a control without meta is left out. The snapshot leaves
-    no subscription and does not follow later changes. A name without a device gives None.
+    A retained value on a pushbutton is a leftover, a control without meta and a topic outside controls
+    are left out. The snapshot leaves no subscription and does not follow later changes. A name without
+    a device gives None.
     """
     device = await driver.create_device("dev", title={"en": "Device", "ru": "Устройство"})
     temp = await device.create_control("temp", ControlType.VALUE, units="deg C", precision=0.1, value=21.54)
@@ -246,6 +255,7 @@ async def test_device_snapshot_has_the_fields_of_the_live_objects_and_stays_as_r
     # Raw retained messages wait for PUBACK, so the broker has everything above once they return
     await driver.raw.publish("/devices/dev/controls/button", "1", retain=True)
     await driver.raw.publish("/devices/dev/controls/no_meta", "5", retain=True)
+    await driver.raw.publish("/devices/dev/other/ghost/meta", '{"type": "value"}', retain=True)
 
     snapshot = await client.get_device_snapshot("dev")
 
@@ -458,9 +468,9 @@ async def test_malformed_foreign_meta_does_not_break_reading(connect: ConnectCli
 
 async def test_foreign_meta_numbers_out_of_range_are_dropped(connect: ConnectClient) -> None:
     """
-    A precision too large for a float, NaN and infinite limits are dropped from a foreign meta. The control
-    reads, a snapshot works, the same meta delivered again is no change, and create_device with force
-    takes the name.
+    A zero precision, a precision too large for a float, NaN and infinite limits are dropped from a foreign
+    meta. The control reads, a snapshot works, the same meta delivered again is no change,
+    and create_device with force takes the name.
     """
     other = await connect("other")
     meta = '{"type": "value", "precision": 1%s, "min": NaN, "max": -Infinity}' % ("0" * 400)
@@ -470,6 +480,7 @@ async def test_foreign_meta_numbers_out_of_range_are_dropped(connect: ConnectCli
             "/devices/odd/meta": '{"driver": "other"}',
             "/devices/odd/controls/level/meta": meta,
             "/devices/odd/controls/level": "5",
+            "/devices/odd/controls/step/meta": '{"type": "value", "precision": 0}',
         },
     )
     client = await connect("service")
@@ -482,6 +493,7 @@ async def test_foreign_meta_numbers_out_of_range_are_dropped(connect: ConnectCli
     await wait_until(lambda: level.value == 6)
 
     assert (level.meta.precision, level.meta.minimum, level.meta.maximum) == (None, None, None)
+    assert (await client.get_control("odd/step")).meta.precision is None
     assert not metas
     snapshot = await client.get_device_snapshot("odd")
     assert snapshot.controls["level"].meta.precision is None
@@ -605,12 +617,14 @@ async def test_value_and_error_that_came_before_the_meta_show_once_the_control_a
     """
     error reads NONE while the control or the device does not exist. A value and an error that came before
     the meta show once the control appears, and on_value and on_error registered earlier get them then.
+    An empty meta before it removes nothing and keeps the value.
     """
     device = await client.get_device("dev")
     control = await client.get_control("dev/temp")
     calls: list = []
     control.on_value(lambda c, value, previous: calls.append(("value", value, previous)))
     control.on_error(lambda c, error, previous: calls.append(("control", error, previous)))
+    control.on_removed(lambda c: calls.append(("removed",)))
     device.on_error(lambda d, error, previous: calls.append(("device", error, previous)))
 
     await publish_retained(
@@ -626,6 +640,7 @@ async def test_value_and_error_that_came_before_the_meta_show_once_the_control_a
     assert device.error == ControlErrorFlags.WRITE
     assert not control.exists and control.error == ControlErrorFlags.NONE and control.value is None
 
+    await driver.raw.publish("/devices/dev/controls/temp/meta", "", retain=True)
     await driver.raw.publish("/devices/dev/controls/temp/meta", '{"type": "value"}', retain=True)
     await wait_until(lambda: len(calls) == 3)
     assert control.error == ControlErrorFlags.READ and control.value == 21

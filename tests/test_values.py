@@ -176,7 +176,8 @@ async def test_command_to_a_deprecated_number_type_is_a_checked_number(
 async def test_invalid_declaration_publishes_nothing(broker: MosquittoBroker, client: Client) -> None:
     """
     A wrong type, a deprecated type, a wrong initial value or any initial value of a pushbutton, a meta field
-    the meta cannot carry and a name too long for the topics of the control fail before the first
+    the meta cannot carry and a name too long for the topics of the device or the control fail before
+    the first
     publication. A lone surrogate has no UTF-8 form, a NaN order would make the meta invalid JSON.
     Of two wrong fields precision is reported first.
 
@@ -217,6 +218,7 @@ async def test_invalid_declaration_publishes_nothing(broker: MosquittoBroker, cl
         (device.create_control("a", ControlType.VALUE, hidden=None), TypeError),
         (device.create_control("a/b", ControlType.VALUE), InvalidNameError),
         (device.create_control("x" * 70000, ControlType.VALUE, value=1), InvalidNameError),
+        (client.create_device("x" * 70000), InvalidNameError),
     ]
     for call, error in calls:
         with pytest.raises(error):

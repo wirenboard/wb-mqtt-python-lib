@@ -34,7 +34,9 @@ from wb_mqtt_lib import (
     Client,
     Control,
     ControlErrorFlags,
+    ControlMeta,
     ControlType,
+    DeviceMeta,
     DeviceTakenError,
     InvalidNameError,
     Message,
@@ -159,6 +161,43 @@ async def test_control_meta_goes_out_by_convention_and_comes_back(
         **meta,
     }
     assert remote.meta == own.meta
+
+
+async def test_create_control_takes_positional_arguments_in_the_order_of_readme(client: Client) -> None:
+    """
+    A service may pass the arguments of create_control by position, in the order README lists them.
+    """
+    device = await client.create_device("dev")
+
+    level = await device.create_control(
+        "level",
+        ControlType.VALUE,
+        "Level",
+        5,
+        ControlErrorFlags.READ,
+        10,
+        0,
+        0.5,
+        True,
+        "V",
+        7,
+        True,
+        {"5": "Five"},
+    )
+
+    assert (level.value, level.error) == (5, ControlErrorFlags.READ)
+    assert level.meta == ControlMeta(
+        control_type=ControlType.VALUE,
+        title=TranslatedTitle("Level"),
+        units="V",
+        precision=0.5,
+        minimum=0,
+        maximum=10,
+        order=7,
+        readonly=True,
+        hidden=True,
+        enum={"5": TranslatedTitle("Five")},
+    )
 
 
 async def test_error_of_create_control_goes_out_between_the_meta_and_the_value(
@@ -533,10 +572,12 @@ async def test_command_to_readonly_control_reaches_no_handler_until_readonly_is_
 ) -> None:
     """
     A readonly control has no /on by the convention. Like wb-rules, the client drops a command to it, for the
-    control handler and the device handler alike. Once readonly is off, commands come again.
+    control handler and the device handler alike. Once readonly is off, commands come again. The service
+    itself still writes the control and presses its readonly button.
     """
     device = await client.create_device("dev")
     relay = await device.create_control("relay", ControlType.SWITCH, value=False, readonly=True)
+    button = await device.create_control("button", ControlType.PUSHBUTTON, readonly=True)
     commands: list[str] = []
     relay.on_command(lambda _control, value: commands.append(f"control {value}"))
     device.on_control_command(lambda _control, value: commands.append(f"device {value}"))
@@ -544,7 +585,18 @@ async def test_command_to_readonly_control_reaches_no_handler_until_readonly_is_
     seen: list[Message] = []
     await client.raw.subscribe("/devices/dev/controls/relay/on", seen.append)
     user = await connect("user")
+    published: list[tuple[str, bytes]] = []
+    await user.raw.subscribe(
+        "/devices/dev/controls/+", lambda message: published.append((message.topic, message.payload))
+    )
 
+    await relay.set_value(True)
+    await button.set_value(True)
+    await wait_until(
+        lambda: {("/devices/dev/controls/relay", b"1"), ("/devices/dev/controls/button", b"1")}
+        <= set(published)
+    )
+    assert relay.value is True
     await user.raw.publish("/devices/dev/controls/relay/on", "1")
     await wait_until(lambda: len(seen) == 1)
     await relay.update_meta(readonly=False)
@@ -666,7 +718,8 @@ async def test_own_listeners_survive_removal_and_creation_again(
 ) -> None:
     """
     Listeners of an own control stay through remove() and work with the control created again. remove()
-    clears the value and the error with on_value and on_error, as an erasure by a driver does.
+    clears the value and the error with on_value and on_error, as an erasure by a driver does, and the meta
+    of the control and of the device reads empty.
     """
     device = await client.create_device("dev")
     relay = await device.create_control(
@@ -681,6 +734,7 @@ async def test_own_listeners_survive_removal_and_creation_again(
     await wait_until(lambda: events["added"] and events["value"] and events["error"])
 
     await device.remove()
+    assert relay.meta == ControlMeta() and device.meta == DeviceMeta()
     device = await client.create_device("dev")
     await device.create_control("relay", ControlType.SWITCH, value=True)
     user = await connect("user")
@@ -789,6 +843,46 @@ async def test_remove_driver_devices_erases_a_device_that_a_cancelled_create_dev
     await wait_until(lambda: get_internals(client)["internal tasks"] == 0)
     assert not get_device_object(client, "dev").is_own
     await wait_retained(broker.port, "/devices/dev/#", {})
+
+
+async def test_remove_driver_devices_keeps_a_device_created_while_its_leftovers_are_read(
+    broker: MosquittoBroker, connect: ConnectClient, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A previous run of the service left a device in the broker. remove_driver_devices reads what is under
+    its name, and right then the service creates a device with this name. The new device is not
+    a leftover, it stays.
+    """
+    previous_run = await connect("previous")
+    await publish_retained(
+        previous_run,
+        {
+            "/devices/X/meta": '{"driver": "test-service"}',
+            "/devices/X/controls/old/meta": '{"type": "value"}',
+        },
+    )
+    # pylint: disable=protected-access
+    read_from_broker = client._subscriber.read_retained
+
+    async def read_then_create(topic_filters: list[str]) -> dict[str, bytes]:
+        leftovers = await read_from_broker(topic_filters)
+        if topic_filters == ["/devices/X/#"]:
+            # Once, and the reads of create_device go as they are
+            monkeypatch.setattr(client._subscriber, "read_retained", read_from_broker)
+            device = await client.create_device("X")
+            await device.create_control("new", ControlType.VALUE, value=1)
+        return leftovers
+
+    monkeypatch.setattr(client._subscriber, "read_retained", read_then_create)
+
+    await client.remove_driver_devices()
+
+    assert get_device_object(client, "X").is_own
+    assert set(await read_retained(broker.port, "/devices/X/#")) == {
+        "/devices/X/meta",
+        "/devices/X/controls/new/meta",
+        "/devices/X/controls/new",
+    }
 
 
 async def test_device_error_is_set_cleared_and_erased_before_the_device_meta(

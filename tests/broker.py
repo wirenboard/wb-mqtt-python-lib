@@ -33,7 +33,19 @@ CANCEL_TIMEOUT_S = 6.0
 FIRST_VALUE_META = b'{"type": "value", "readonly": false, "hidden": false, "order": 1}'
 # Device, control and driver names that would break the topic structure or that mosquitto drops
 # the connection on: control characters, C1, a non-character
-INVALID_NAMES = ["", "a/b", "a+b", "a#b", "a\0b", "a\nb", "a\x7fb", "a\x85b", "a\ufdd0b"]
+INVALID_NAMES = [
+    "",
+    "a/b",
+    "a+b",
+    "a#b",
+    "a\0b",
+    "a\nb",
+    "a\x7fb",
+    "a\x85b",
+    "a\x9fb",
+    "a\ufdd0b",
+    "a\ufdefb",
+]
 # Every call of the client that reads the broker, for tests that must cover all of them
 BROKER_READS: dict[str, Callable[[Any], Awaitable[Any]]] = {
     "create_device": lambda client: client.create_device("X"),

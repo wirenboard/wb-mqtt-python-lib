@@ -250,7 +250,8 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
     with or without a link. So is a shared subscription, the client does not support it.
 
     Kept for the replay or the resubscription after reconnect, it would break them every time. On a control
-    character, a non-character or more than 200 slashes mosquitto drops the connection.
+    character, a non-character or more than 200 slashes mosquitto drops the connection. A topic of 65535
+    bytes or with 200 slashes goes through.
     """
     await (await client.create_device("dev")).create_control("temp", ControlType.VALUE, value=21)
     before = get_internals(client)
@@ -312,6 +313,13 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
     await client.raw.subscribe("zigbee2mqtt/#", received.append)
     await client.raw.publish("zigbee2mqtt/bridge/state", "online")
     await wait_until(lambda: len(received) == 1)
+    longest, deepest = "a" * 65535, "/".join(["a"] * 201)
+    at_limits: list[Message] = []
+    await client.raw.subscribe("+", at_limits.append)
+    await client.raw.subscribe("a/#", at_limits.append)
+    await client.raw.publish(longest, "x")
+    await client.raw.publish(deepest, "x")
+    await wait_until(lambda: {message.topic for message in at_limits} == {longest, deepest})
 
 
 async def test_state_gone_with_a_restart_is_not_handed_over_after_reconnect(

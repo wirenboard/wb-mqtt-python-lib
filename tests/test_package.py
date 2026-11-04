@@ -35,15 +35,40 @@ def test_library_imports_its_own_modules_only_relatively() -> None:
 def test_mqtt_layer_does_not_import_the_convention() -> None:
     """
     _mqtt is plain MQTT and knows nothing of the Wiren Board convention, _convention is built over it.
+    The modules of the package root that _mqtt imports, and what they import in turn, count as its part.
     """
+    pending = sorted((PACKAGE_DIR / "_mqtt").rglob("*.py"))
+    checked: set[Path] = set()
     imports = []
-    for path in sorted((PACKAGE_DIR / "_mqtt").glob("*.py")):
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.ImportFrom) or not node.level:
-                continue
-            # Where the import points inside the package, two dots lead from _mqtt to the package itself
-            module = (["_mqtt"] if node.level == 1 else []) + (node.module.split(".") if node.module else [])
-            imports += [
-                f"{path.name}:{node.lineno}" for alias in node.names if "_convention" in module + [alias.name]
-            ]
+    while pending:
+        path = pending.pop()
+        if path in checked:
+            continue
+        checked.add(path)
+        for line, module in _get_relative_imports(path):
+            if "_convention" in module.relative_to(PACKAGE_DIR).parts:
+                imports.append(f"{path.relative_to(PACKAGE_DIR)}:{line}")
+            else:
+                pending.append(module)
     assert not imports
+
+
+def _get_relative_imports(path: Path) -> list[tuple[int, Path]]:
+    """
+    Files of the package that a module imports relatively, with the line of each import.
+    """
+    found = []
+    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+        if not isinstance(node, ast.ImportFrom) or not node.level:
+            continue
+        # One dot is the directory of the module, each next dot is one level up
+        base = path.parents[node.level - 1].joinpath(*(node.module.split(".") if node.module else []))
+        for alias in node.names:
+            # The name is a module itself or a name inside the module the import points to
+            for candidate in (base / alias.name, base):
+                files = [candidate.with_suffix(".py"), candidate / "__init__.py"]
+                module = next((file for file in files if file.is_file()), None)
+                if module is not None:
+                    found.append((node.lineno, module))
+                    break
+    return found

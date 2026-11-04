@@ -18,7 +18,15 @@ from tests.broker import (
     wait_retained,
     wait_until,
 )
-from wb_mqtt_lib import Client, Control, ControlErrorFlags, ControlType, Device
+from wb_mqtt_lib import (
+    Client,
+    Control,
+    ControlErrorFlags,
+    ControlMeta,
+    ControlType,
+    Device,
+    DeviceMeta,
+)
 
 
 async def test_state_listeners_fire_at_registration_with_previous_none(
@@ -168,7 +176,8 @@ async def test_every_listener_waits_for_a_control_that_does_not_exist_yet(
 ) -> None:
     """
     The service starts before the driver. Listeners and a wait hang on a control before it appears,
-    of a foreign device and of an own one.
+    of a foreign device and of an own one. The meta reads empty before the control appears and after
+    it goes.
     """
     foreign = await client.get_control("dev/temp")
     events: dict[str, list] = {"added": [], "value": [], "error": [], "meta": [], "removed": []}
@@ -183,6 +192,7 @@ async def test_every_listener_waits_for_a_control_that_does_not_exist_yet(
     commands = []
     later.on_command(lambda control, value: commands.append(value))
     assert not foreign.exists and foreign.value is None and not later.exists
+    assert foreign.meta == later.meta == ControlMeta() and foreign.device.meta == DeviceMeta()
 
     device = await driver.create_device("dev")
     temp = await device.create_control("temp", ControlType.VALUE, value=1)
@@ -202,6 +212,7 @@ async def test_every_listener_waits_for_a_control_that_does_not_exist_yet(
         "meta": ["V"],
         "removed": [foreign],
     }
+    assert foreign.meta == ControlMeta()
 
 
 async def test_handler_on_a_device_the_client_does_not_read_is_refused(
@@ -469,7 +480,8 @@ async def test_device_listeners_follow_a_name_from_a_foreign_device_to_an_own_on
     """
     The foreign device goes and the own one comes once each, when create_device erases it by force.
 
-    Events of the own device come at the call, its echoes from the broker change nothing.
+    Events of the own device and its controls come at the call, their echoes from the broker change
+    nothing.
     """
     foreign = await driver.create_device("X", title="Foreign")
     await foreign.create_control("temp", ControlType.VALUE, value=1)
@@ -484,6 +496,24 @@ async def test_device_listeners_follow_a_name_from_a_foreign_device_to_an_own_on
     await wait_until(lambda: len(events) == 3)
     await own.update_meta("Renamed")
     await wait_until(lambda: len(events) == 4)
+    values: list = []
+    watched.on_control_value(lambda control, value, previous: values.append((control.name, value, previous)))
+    level = await own.create_control("level", ControlType.VALUE, value=0)
+    button = await own.create_control("button", ControlType.PUSHBUTTON)
+    await level.set_value(1)
+    await level.set_value(2)
+    await button.set_value(True)
+    # The echoes come before the end of this read, the value set after it closes the list
+    await client.raw.read("/devices/X/controls/level")
+    await level.set_value(3)
+    await wait_until(lambda: values[-1:] == [("level", 3, 2)])
+    assert values == [
+        ("level", 0, None),
+        ("level", 1, 0),
+        ("level", 2, 1),
+        ("button", True, None),
+        ("level", 3, 2),
+    ]
     await own.remove()
 
     await wait_until(lambda: len(events) == 5)

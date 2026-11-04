@@ -85,21 +85,28 @@ async def test_subscriptions_go_with_qos_0_and_publications_with_qos_1(
 ) -> None:
     """
     The client subscribes with QoS 0 as wb-rules does, by the convention and raw by default. Only the
-    markers that end retained delivery come with QoS 1. Publications keep QoS 1.
+    markers that end retained delivery come with QoS 1. Publications keep QoS 1, values, a press and
+    a meta update.
     """
     remote = await driver.create_device("remote")
     await remote.create_control("level", ControlType.VALUE, value=1)
     device = await client.create_device("test_dev")
     relay = await device.create_control("relay", ControlType.SWITCH, value=False)
+    button = await device.create_control("button", ControlType.PUSHBUTTON)
     relay.on_command(lambda control, value: None)
     await client.get_control("remote/level")
     await client.get_device_names()
     raw_messages: list[Message] = []
     await client.raw.subscribe("/raw/#", raw_messages.append)
     published: list[Message] = []
-    await driver.raw.subscribe("/devices/test_dev/controls/relay", published.append, qos=1)
+    for topic in ["relay", "relay/meta", "button"]:
+        await driver.raw.subscribe(f"/devices/test_dev/controls/{topic}", published.append, qos=1)
     await driver.raw.publish("/raw/x", "1", qos=1)
-    await wait_until(lambda: bool(raw_messages and published))
+    await relay.set_value(True)
+    await button.set_value(True)
+    await relay.update_meta(title="Relay")
+    # The retained value and meta of the relay, then the new value, the press and the new meta
+    await wait_until(lambda: bool(raw_messages) and len(published) == 5)
 
     subscriptions = broker.get_subscriptions()
 
@@ -111,7 +118,7 @@ async def test_subscriptions_go_with_qos_0_and_publications_with_qos_1(
     assert granted("/raw/x") == {0}
     assert {qos for topic_filter, qos in subscriptions if topic_filter.startswith("/wbretainhack/")} == {1}
     assert raw_messages[0].qos == 0
-    assert published[0].qos == 1
+    assert [message.qos for message in published] == [1] * 5
 
 
 @pytest.fixture
@@ -201,6 +208,7 @@ async def test_login_rejected_after_a_reconnect_is_retried(login_broker: Mosquit
     [
         ("mqtt://127.0.0.1:1883", []),
         ("unix://", []),
+        ("unix:/tmp/mosquitto.sock", []),
         ("unix://tmp/mosquitto.sock", []),
         ("unix:///tmp/mosquitto?.sock", []),
         ("unix:///tmp/mosquitto#.sock", []),
