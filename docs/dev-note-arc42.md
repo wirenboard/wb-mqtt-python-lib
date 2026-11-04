@@ -154,8 +154,9 @@ wb_mqtt_lib/
     ├── topics.py            # топики /devices/..., их сборка и разбор, порядок и этапы стирания
     ├── values.py            # ControlType, ControlMeta, TranslatedTitle, ControlErrorFlags, DeviceSnapshot,
     │                        #   значения в строку топика и обратно, строгая проверка своего, мягкий разбор чужого
-    ├── state.py             # State, DeviceRecord, ControlRecord, Ownership, устройства и контролы в памяти,
-    │                        #   каждое изменение, которое видят слушатели, превращает в события и будит ожидания
+    ├── state.py             # State, DeviceRecord, ControlRecord, Ownership, ControlEvent, DeviceEvent,
+    │                        #   устройства и контролы в памяти, каждое изменение, которое видят слушатели,
+    │                        #   превращает в события и будит ожидания
     ├── device_manager.py    # DeviceManager, все операции с устройствами, чтение чужих из брокера в State,
     │                        #   публикация и стирание своих, команды из /on, проверки владельца, разовые чтения
     └── devices.py           # Device и Control, публичные объекты по имени

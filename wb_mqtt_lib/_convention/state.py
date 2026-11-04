@@ -25,20 +25,63 @@ from .values import (
 
 logger = get_logger(__name__)
 
+
+class ControlEvent(enum.Enum):
+    """
+    Event of a control for its handlers, the value names the on_* method, VALUE goes to on_value.
+    """
+
+    ADDED = "added"
+    REMOVED = "removed"
+    VALUE = "value"
+    ERROR = "error"
+    META = "meta"
+    COMMAND = "command"
+
+
+class DeviceEvent(enum.Enum):
+    """
+    Event for the handlers of a device, of the device itself or of any of its controls.
+    """
+
+    ADDED = "added"
+    REMOVED = "removed"
+    META = "meta"
+    ERROR = "error"
+    CONTROL_ADDED = "control_added"
+    CONTROL_REMOVED = "control_removed"
+    CONTROL_VALUE = "control_value"
+    CONTROL_ERROR = "control_error"
+    CONTROL_META = "control_meta"
+    CONTROL_COMMAND = "control_command"
+
+
 # Control events that the device repeats to its own listeners
 _DEVICE_EVENT_OF = {
-    "added": "control_added",
-    "removed": "control_removed",
-    "value": "control_value",
-    "error": "control_error",
-    "meta": "control_meta",
-    "command": "control_command",
+    ControlEvent.ADDED: DeviceEvent.CONTROL_ADDED,
+    ControlEvent.REMOVED: DeviceEvent.CONTROL_REMOVED,
+    ControlEvent.VALUE: DeviceEvent.CONTROL_VALUE,
+    ControlEvent.ERROR: DeviceEvent.CONTROL_ERROR,
+    ControlEvent.META: DeviceEvent.CONTROL_META,
+    ControlEvent.COMMAND: DeviceEvent.CONTROL_COMMAND,
 }
 _CONTROL_EVENT_OF = {device_event: event for event, device_event in _DEVICE_EVENT_OF.items()}
-# Arguments each event brings to its handler
-_HANDLER_ARGUMENTS = {"added": 1, "removed": 1, "meta": 1, "command": 2, "value": 3, "error": 3}
-# Events of the device itself, they bring the device instead of a control
-_DEVICE_SELF_EVENTS = frozenset({"added", "removed", "meta", "error"})
+# Arguments each control event brings to its handler
+_HANDLER_ARGUMENTS = {
+    ControlEvent.ADDED: 1,
+    ControlEvent.REMOVED: 1,
+    ControlEvent.META: 1,
+    ControlEvent.COMMAND: 2,
+    ControlEvent.VALUE: 3,
+    ControlEvent.ERROR: 3,
+}
+# Events of the device itself and the arguments they bring, the device instead of a control
+_DEVICE_HANDLER_ARGUMENTS = {
+    DeviceEvent.ADDED: 1,
+    DeviceEvent.REMOVED: 1,
+    DeviceEvent.META: 1,
+    DeviceEvent.ERROR: 3,
+}
 
 
 class Ownership(enum.Enum):
@@ -258,39 +301,44 @@ class State:  # pylint: disable=too-many-public-methods
     # Event handlers
     # ------------------------------------------------------------
 
-    def add_control_listener(self, device_name: str, control_name: str, event: str, handler: Handler) -> None:
+    def add_control_listener(
+        self, device_name: str, control_name: str, event: ControlEvent, handler: Handler
+    ) -> None:
         """
         Register a handler of a control event and queue the calls that describe the current state.
         """
-        check_handler_arguments(handler, _HANDLER_ARGUMENTS[event], f"on_{event}")
+        check_handler_arguments(handler, _HANDLER_ARGUMENTS[event], f"on_{event.value}")
         control = self.ensure_control(device_name, control_name)
         if not control.exists:
             logger.debug(
-                "Control %s/%s does not exist yet, its %s handler waits", device_name, control_name, event
+                "Control %s/%s does not exist yet, its %s handler waits",
+                device_name,
+                control_name,
+                event.value,
             )
         control.listeners.add_handler(
             event, handler, self._get_initial_calls(device_name, control_name, event)
         )
 
-    def add_device_listener(self, device_name: str, event: str, handler: Handler) -> None:
+    def add_device_listener(self, device_name: str, event: DeviceEvent, handler: Handler) -> None:
         """
         Register a handler of an event of the device itself or of any of its controls.
         """
         # Events of the device itself
-        if event in _DEVICE_SELF_EVENTS:
-            check_handler_arguments(handler, _HANDLER_ARGUMENTS[event], f"on_{event}")
+        if event in _DEVICE_HANDLER_ARGUMENTS:
+            check_handler_arguments(handler, _DEVICE_HANDLER_ARGUMENTS[event], f"on_{event.value}")
             device = self.ensure_device(device_name)
             initial_calls: list[tuple] = []
-            if device.exists and event == "added":
+            if device.exists and event == DeviceEvent.ADDED:
                 initial_calls = [(self._make_device(device_name),)]
-            elif device.exists and event == "error" and device.error:
+            elif device.exists and event == DeviceEvent.ERROR and device.error:
                 initial_calls = [(self._make_device(device_name), device.error, ControlErrorFlags.NONE)]
             device.listeners.add_handler(event, handler, initial_calls)
             return
 
         # Events of every control of the device
         control_event = _CONTROL_EVENT_OF[event]
-        check_handler_arguments(handler, _HANDLER_ARGUMENTS[control_event], f"on_{event}")
+        check_handler_arguments(handler, _HANDLER_ARGUMENTS[control_event], f"on_{event.value}")
         device = self.ensure_device(device_name)
         initial_calls = [
             call
@@ -333,13 +381,13 @@ class State:  # pylint: disable=too-many-public-methods
             if not future.done():
                 future.set_result(None)
         self._announce_device_change(device_name, state_before)
-        self._emit_control_event(device_name, control_name, "added")
+        self._emit_control_event(device_name, control_name, ControlEvent.ADDED)
         self.wake_device_waits(device_name)
 
         # An error and a value that came before the meta
         if control.error:
             self._emit_control_event(
-                device_name, control_name, "error", control.error, ControlErrorFlags.NONE
+                device_name, control_name, ControlEvent.ERROR, control.error, ControlErrorFlags.NONE
             )
         if control.payload is not None:
             self.set_control_value(device_name, control_name, parse_value(meta, control.payload))
@@ -360,7 +408,7 @@ class State:  # pylint: disable=too-many-public-methods
             control.value = None if control.payload is None else parse_value(meta, control.payload)
             if control.value is not None:
                 _wake_value_waits(control)
-        self._emit_control_event(device_name, control_name, "meta")
+        self._emit_control_event(device_name, control_name, ControlEvent.META)
 
     def mark_control_removed(self, device_name: str, control_name: str) -> None:
         """
@@ -383,7 +431,7 @@ class State:  # pylint: disable=too-many-public-methods
             logger.debug(
                 "Control %s/%s is removed, its handlers wait for it to appear", device_name, control_name
             )
-        self._emit_control_event(device_name, control_name, "removed")
+        self._emit_control_event(device_name, control_name, ControlEvent.REMOVED)
 
         # The record stays only for listeners and waits, the device may go with the control
         if control.is_unused:
@@ -416,16 +464,16 @@ class State:  # pylint: disable=too-many-public-methods
             # An erased value reaches on_value as None, erasing no value is no event. Removal comes
             # with the meta.
             if previous is not None:
-                self._emit_control_event(device_name, control_name, "value", None, previous)
+                self._emit_control_event(device_name, control_name, ControlEvent.VALUE, None, previous)
             return
-        self._emit_control_event(device_name, control_name, "value", value, previous)
+        self._emit_control_event(device_name, control_name, ControlEvent.VALUE, value, previous)
         _wake_value_waits(control)
 
     def emit_pushbutton_press(self, device_name: str, control_name: str) -> None:
         """
         A pushbutton was pressed. Every press is an event, the value stays None.
         """
-        self._emit_control_event(device_name, control_name, "value", True, None)
+        self._emit_control_event(device_name, control_name, ControlEvent.VALUE, True, None)
 
     def set_control_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
         control = self._devices[device_name].controls[control_name]
@@ -434,19 +482,19 @@ class State:  # pylint: disable=too-many-public-methods
         previous = control.error
         control.error = error
         if control.exists:
-            self._emit_control_event(device_name, control_name, "error", error, previous)
+            self._emit_control_event(device_name, control_name, ControlEvent.ERROR, error, previous)
 
     def emit_command(self, device_name: str, control_name: str, value: Any) -> None:
         """
         A command to an own control, for on_command of the control and on_control_command of the device.
         """
-        self._emit_control_event(device_name, control_name, "command", value)
+        self._emit_control_event(device_name, control_name, ControlEvent.COMMAND, value)
 
     def has_command_listeners(self, device_name: str, control_name: str) -> bool:
         device = self._devices[device_name]
         return device.controls[control_name].listeners.has_listeners(
-            "command"
-        ) or device.listeners.has_listeners("control_command")
+            ControlEvent.COMMAND
+        ) or device.listeners.has_listeners(DeviceEvent.CONTROL_COMMAND)
 
     def set_device_meta(self, device_name: str, meta: DeviceMeta) -> None:
         # State before the change, for _announce_device_change
@@ -470,8 +518,8 @@ class State:  # pylint: disable=too-many-public-methods
             return
         previous = device.error
         device.error = error
-        if device.exists and device.listeners.has_listeners("error"):
-            device.listeners.emit_event("error", (self._make_device(device_name), error, previous))
+        if device.exists and device.listeners.has_listeners(DeviceEvent.ERROR):
+            device.listeners.emit_event(DeviceEvent.ERROR, (self._make_device(device_name), error, previous))
 
     def clear_device_meta(self, device_name: str) -> None:
         """
@@ -542,7 +590,7 @@ class State:  # pylint: disable=too-many-public-methods
     # Helpers
     # ------------------------------------------------------------
 
-    def _get_initial_calls(self, device_name: str, control_name: str, event: str) -> list[tuple]:
+    def _get_initial_calls(self, device_name: str, control_name: str, event: ControlEvent) -> list[tuple]:
         """
         Calls that describe the current state to a handler registered now.
 
@@ -552,11 +600,11 @@ class State:  # pylint: disable=too-many-public-methods
         if control is None or not control.exists:
             return []
         control_object = self._make_control(device_name, control_name)
-        if event == "added":
+        if event == ControlEvent.ADDED:
             return [(control_object,)]
-        if event == "value" and control.value is not None:
+        if event == ControlEvent.VALUE and control.value is not None:
             return [(control_object, control.value, None)]
-        if event == "error" and control.error:
+        if event == ControlEvent.ERROR and control.error:
             return [(control_object, control.error, ControlErrorFlags.NONE)]
         return []
 
@@ -574,23 +622,25 @@ class State:  # pylint: disable=too-many-public-methods
         existed, title, driver = state_before
         device = self._devices[device_name]
         if device.exists and not existed:
-            event = "added"
+            event = DeviceEvent.ADDED
         elif existed and not device.exists:
-            event = "removed"
+            event = DeviceEvent.REMOVED
         elif device.exists and (device.title, device.driver) != (title, driver):
-            event = "meta"
+            event = DeviceEvent.META
         else:
             return
 
         # The event, and on_error too for a device that appears with an error
         if device.listeners.has_listeners(event):
             device.listeners.emit_event(event, (self._make_device(device_name),))
-        if event == "added" and device.error and device.listeners.has_listeners("error"):
+        if event == DeviceEvent.ADDED and device.error and device.listeners.has_listeners(DeviceEvent.ERROR):
             device.listeners.emit_event(
-                "error", (self._make_device(device_name), device.error, ControlErrorFlags.NONE)
+                DeviceEvent.ERROR, (self._make_device(device_name), device.error, ControlErrorFlags.NONE)
             )
 
-    def _emit_control_event(self, device_name: str, control_name: str, event: str, *details: Any) -> None:
+    def _emit_control_event(
+        self, device_name: str, control_name: str, event: ControlEvent, *details: Any
+    ) -> None:
         """
         Queue an event of a control for its listeners and those of its device. The arguments are built only
         when someone listens.

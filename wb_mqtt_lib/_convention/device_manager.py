@@ -27,7 +27,14 @@ from .._mqtt.publisher import Publisher
 from .._mqtt.subscriber import Message, Subscriber
 from .._tasks import TaskSet, is_cancelled_from_outside, retrieve_error
 from . import topics
-from .state import ControlRecord, DeviceRecord, Ownership, State
+from .state import (
+    ControlEvent,
+    ControlRecord,
+    DeviceEvent,
+    DeviceRecord,
+    Ownership,
+    State,
+)
 from .values import (
     ControlErrorFlags,
     ControlMeta,
@@ -197,9 +204,10 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         if self._is_removed(name):
             return
         device = self._require_own_device(name)
-        if any(control.listeners.has_listeners("command") for control in device.controls.values()) or (
-            device.listeners.has_listeners("control_command")
-        ):
+        has_command_handlers = device.listeners.has_listeners(DeviceEvent.CONTROL_COMMAND) or any(
+            control.listeners.has_listeners(ControlEvent.COMMAND) for control in device.controls.values()
+        )
+        if has_command_handlers:
             logger.debug("Device %s is removed, its command handlers wait until it is created again", name)
 
         # Topics to erase, the controls in reverse order, then the error and the meta of the device
@@ -400,7 +408,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
     # Event handlers
     # ------------------------------------------------------------
 
-    def add_control_listener(self, device_name: str, control_name: str, event: str, handler: Handler) -> None:
+    def add_control_listener(
+        self, device_name: str, control_name: str, event: ControlEvent, handler: Handler
+    ) -> None:
         """
         Register a handler of a control event.
 
@@ -414,11 +424,11 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         """
         self._raise_if_closed()
         self._check_device_watched(device_name)
-        if event == "command":
+        if event == ControlEvent.COMMAND:
             self._check_takes_commands(device_name)
         self.state.add_control_listener(device_name, control_name, event, handler)
 
-    def add_device_listener(self, device_name: str, event: str, handler: Handler) -> None:
+    def add_device_listener(self, device_name: str, event: DeviceEvent, handler: Handler) -> None:
         """
         Register a handler of an event of the device itself or of any of its controls.
 
@@ -432,7 +442,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         """
         self._raise_if_closed()
         self._check_device_watched(device_name)
-        if event == "control_command":
+        if event == DeviceEvent.CONTROL_COMMAND:
             self._check_takes_commands(device_name)
         self.state.add_device_listener(device_name, event, handler)
 

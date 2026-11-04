@@ -16,7 +16,7 @@ from .._listeners import (
     Handler,
 )
 from .device_manager import DeviceManager
-from .state import ControlRecord, DeviceRecord
+from .state import ControlEvent, ControlRecord, DeviceEvent, DeviceRecord
 from .values import ControlErrorFlags, ControlMeta, ControlType, DeviceMeta, TitleLike
 
 # Meta of a control or a device that does not exist, every field empty
@@ -99,13 +99,13 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         handler(control) when the control appears. Called at once if it exists already.
         """
-        return self._listen("added", handler)
+        return self._listen(ControlEvent.ADDED, handler)
 
     def on_removed(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when the meta of the control is erased.
         """
-        return self._listen("removed", handler)
+        return self._listen(ControlEvent.REMOVED, handler)
 
     def on_value(self, handler: ChangeHandler) -> ChangeHandler:
         """
@@ -117,7 +117,7 @@ class Control:  # pylint: disable=too-many-public-methods
         Called at once with previous=None when the value is known already. A new type of a foreign control
         reads the kept payload again and changes value without this event, only on_meta comes.
         """
-        return self._listen("value", handler)
+        return self._listen(ControlEvent.VALUE, handler)
 
     def on_error(self, handler: ChangeHandler) -> ChangeHandler:
         """
@@ -125,13 +125,13 @@ class Control:  # pylint: disable=too-many-public-methods
 
         Called at once with previous=NONE if the control has an error.
         """
-        return self._listen("error", handler)
+        return self._listen(ControlEvent.ERROR, handler)
 
     def on_meta(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when a meta field such as the title or readonly changes.
         """
-        return self._listen("meta", handler)
+        return self._listen(ControlEvent.META, handler)
 
     def on_command(self, handler: CommandHandler) -> CommandHandler:
         """
@@ -145,7 +145,7 @@ class Control:  # pylint: disable=too-many-public-methods
         Raises:
             NotOwnError: the control is foreign.
         """
-        return self._listen("command", handler)
+        return self._listen(ControlEvent.COMMAND, handler)
 
     def remove_handler(self, handler: Handler) -> None:
         """
@@ -253,7 +253,7 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         await self._device_manager.remove_control(self.device.name, self.name)
 
-    def _listen(self, event: str, handler: Any) -> Any:
+    def _listen(self, event: ControlEvent, handler: Any) -> Any:
         self._device_manager.add_control_listener(self.device.name, self.name, event, handler)
         return handler
 
@@ -331,19 +331,19 @@ class Device:  # pylint: disable=too-many-public-methods
         handler(device) when the device appears, with its JSON meta or its first control. Called at once if
         it exists already.
         """
-        return self._listen("added", handler)
+        return self._listen(DeviceEvent.ADDED, handler)
 
     def on_removed(self, handler: DeviceHandler) -> DeviceHandler:
         """
         handler(device) when the device is gone, its JSON meta and every control erased.
         """
-        return self._listen("removed", handler)
+        return self._listen(DeviceEvent.REMOVED, handler)
 
     def on_meta(self, handler: DeviceHandler) -> DeviceHandler:
         """
         handler(device) when the title or the driver changes while the device exists.
         """
-        return self._listen("meta", handler)
+        return self._listen(DeviceEvent.META, handler)
 
     def on_error(self, handler: ChangeHandler) -> ChangeHandler:
         """
@@ -352,25 +352,25 @@ class Device:  # pylint: disable=too-many-public-methods
 
         Called at once with previous=NONE if the device has an error.
         """
-        return self._listen("error", handler)
+        return self._listen(DeviceEvent.ERROR, handler)
 
     def on_control_added(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when a control of the device appears. Called at once for existing controls.
         """
-        return self._listen("control_added", handler)
+        return self._listen(DeviceEvent.CONTROL_ADDED, handler)
 
     def on_control_removed(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when a control of the device is removed.
         """
-        return self._listen("control_removed", handler)
+        return self._listen(DeviceEvent.CONTROL_REMOVED, handler)
 
     def on_control_value(self, handler: ChangeHandler) -> ChangeHandler:
         """
         handler(control, value, previous) for any control of the device. Called at once for known values.
         """
-        return self._listen("control_value", handler)
+        return self._listen(DeviceEvent.CONTROL_VALUE, handler)
 
     def on_control_error(self, handler: ChangeHandler) -> ChangeHandler:
         """
@@ -378,13 +378,13 @@ class Device:  # pylint: disable=too-many-public-methods
 
         Called at once for existing controls with an error.
         """
-        return self._listen("control_error", handler)
+        return self._listen(DeviceEvent.CONTROL_ERROR, handler)
 
     def on_control_meta(self, handler: ControlHandler) -> ControlHandler:
         """
         handler(control) when meta of any control of the device changes.
         """
-        return self._listen("control_meta", handler)
+        return self._listen(DeviceEvent.CONTROL_META, handler)
 
     def on_control_command(self, handler: CommandHandler) -> CommandHandler:
         """
@@ -397,7 +397,7 @@ class Device:  # pylint: disable=too-many-public-methods
         Raises:
             NotOwnError: the device is foreign.
         """
-        return self._listen("control_command", handler)
+        return self._listen(DeviceEvent.CONTROL_COMMAND, handler)
 
     def remove_handler(self, handler: Handler) -> None:
         """
@@ -528,7 +528,7 @@ class Device:  # pylint: disable=too-many-public-methods
         """
         await self._device_manager.remove_device(self.name)
 
-    def _listen(self, event: str, handler: Any) -> Any:
+    def _listen(self, event: DeviceEvent, handler: Any) -> Any:
         self._device_manager.add_device_listener(self.name, event, handler)
         return handler
 

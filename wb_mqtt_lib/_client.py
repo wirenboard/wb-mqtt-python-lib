@@ -4,6 +4,7 @@ Client: one broker connection, reconnect, the devices of the service and its bac
 
 import asyncio
 import contextlib
+import enum
 import uuid
 from typing import Any, Coroutine, Optional
 
@@ -33,6 +34,14 @@ RECONNECT_MIN_DELAY_S = 0.5
 RECONNECT_MAX_DELAY_S = 30.0
 # Drivers of the clients connected in this process. Cleanup goes by the driver, so it must not be shared
 _DRIVERS_IN_USE: set[str] = set()
+
+
+class _ClientEvent(enum.Enum):
+    """
+    Event of the client for its handlers, CONNECTION goes to on_connection_change.
+    """
+
+    CONNECTION = "connection"
 
 
 class Client:  # pylint: disable=too-many-instance-attributes
@@ -192,7 +201,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
         """
         self._raise_if_closed()
         check_handler_arguments(handler, 1, "on_connection_change")
-        return self._connection_listeners.add_handler("connection", handler)
+        return self._connection_listeners.add_handler(_ClientEvent.CONNECTION, handler)
 
     def remove_handler(self, handler: Handler) -> None:
         """
@@ -352,7 +361,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
                     self._publisher.connection_restored(connection)
                     await self._subscriber.publish_resubscription_marker()
                     self._connected_event.set()
-                    self._connection_listeners.emit_event("connection", (True,))
+                    self._connection_listeners.emit_event(_ClientEvent.CONNECTION, (True,))
                     reported_connected = True
                     # A session that keeps failing before this point keeps the pause growing
                     delay = RECONNECT_MIN_DELAY_S
@@ -383,7 +392,7 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 self._subscriber.connection_lost()
                 self._publisher.connection_lost()
                 if reported_connected:
-                    self._connection_listeners.emit_event("connection", (False,))
+                    self._connection_listeners.emit_event(_ClientEvent.CONNECTION, (False,))
                 await self._publisher.wait_ended_session()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._stop_requested.wait(), delay)
