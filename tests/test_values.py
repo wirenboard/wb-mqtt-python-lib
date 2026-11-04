@@ -304,28 +304,32 @@ async def test_none_erases_the_own_value(
     broker: MosquittoBroker, connect: ConnectClient, client: Client, control_type: ControlType
 ) -> None:
     """
-    set_value(None) erases the retained value. The value becomes None without an event, a reader has None
-    too, and the value does not come back after reconnect. A value set again goes out as usual.
+    set_value(None) erases the retained value. The value becomes None, on_value of the own control and
+    of a reader gets None with the erased value in previous, erasing again is no event. The value does not
+    come back after reconnect, a value set again goes out as usual.
     """
     initial = {ControlType.VALUE: 5, ControlType.SWITCH: True, ControlType.TEXT: "on"}[control_type]
     control = await (await client.create_device("dev")).create_control("c", control_type, value=initial)
     events: list = []
-    control.on_value(lambda _control, value, previous: events.append(value))
-    await wait_until(lambda: events == [initial])
+    control.on_value(lambda _control, value, previous: events.append((value, previous)))
+    await wait_until(lambda: events == [(initial, None)])
     reader = await connect("reader")
     remote = await reader.get_control("dev/c")
-    assert remote.value == initial
+    remote_events: list = []
+    remote.on_value(lambda _control, value, previous: remote_events.append((value, previous)))
+    await wait_until(lambda: remote_events == [(initial, None)])
 
+    await control.set_value(None)
     await control.set_value(None)
 
     assert control.value is None
     await wait_retained(broker.port, "/devices/dev/controls/c", {})
-    await wait_until(lambda: remote.value is None)
+    await wait_until(lambda: remote.value is None and remote_events == [(initial, None), (None, initial)])
     await restart_broker(broker, client)
     meta = f'{{"type": "{control_type}", "readonly": false, "hidden": false, "order": 1}}'.encode()
     await wait_retained(broker.port, "/devices/dev/controls/c/#", {"/devices/dev/controls/c/meta": meta})
     await control.set_value(initial)
-    await wait_until(lambda: events == [initial, initial])
+    await wait_until(lambda: events == [(initial, None), (None, initial), (initial, None)])
 
 
 @pytest.mark.parametrize(

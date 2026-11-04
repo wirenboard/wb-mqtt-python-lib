@@ -196,8 +196,8 @@ async def test_every_listener_waits_for_a_control_that_does_not_exist_yet(
     await wait_until(lambda: events["removed"] and commands == [True])
     assert events == {
         "added": [foreign],
-        "value": [1],
-        # the driver erases /meta/error before the meta, so the error is cleared before the removal
+        # the driver erases the value and /meta/error before the meta, so both are cleared before the removal
+        "value": [1, None],
         "error": [ControlErrorFlags.READ, ControlErrorFlags.NONE],
         "meta": ["V"],
         "removed": [foreign],

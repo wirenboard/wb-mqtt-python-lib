@@ -404,7 +404,7 @@ class State:  # pylint: disable=too-many-public-methods
     ) -> None:
         """
         A new value of the control. on_value comes when the value changed, with notify_unchanged also when
-        it is the same.
+        it is the same. An erased value comes as None.
         """
         control = self._devices[device_name].controls[control_name]
         unchanged = value == control.value or (_is_nan(value) and _is_nan(control.value))
@@ -413,7 +413,10 @@ class State:  # pylint: disable=too-many-public-methods
         previous = control.value
         control.value = value
         if value is None:
-            # Cleared without an event, a handler never gets None. Removal comes with the meta.
+            # An erased value reaches on_value as None, erasing no value is no event. Removal comes
+            # with the meta.
+            if previous is not None:
+                self._emit_control_event(device_name, control_name, "value", None, previous)
             return
         self._emit_control_event(device_name, control_name, "value", value, previous)
         _wake_value_waits(control)

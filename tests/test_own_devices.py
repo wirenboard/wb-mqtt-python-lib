@@ -216,12 +216,13 @@ async def test_value_clears_the_read_error_before_it_goes_out(connect: ConnectCl
     await temp.set_value(None)
 
     assert temp.error == ControlErrorFlags.WRITE
-    await wait_until(lambda: len(seen) == 4 and len(events) == 3)
+    await wait_until(lambda: len(seen) == 4 and len(events) == 4)
     assert seen == [("error", b"w"), ("temp", b"22"), ("temp", b"23"), ("temp", b"")]
     assert sorted(events, key=str) == [
         ("error", ControlErrorFlags.WRITE, ControlErrorFlags.READ | ControlErrorFlags.WRITE),
         ("value", 22, 21),
         ("value", 23, 22),
+        ("value", None, 23),
     ]
 
 

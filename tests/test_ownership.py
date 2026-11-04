@@ -109,8 +109,16 @@ async def test_objects_and_listeners_follow_a_name_that_comes_back(
     owner = driver if new_owner == "driver" else client
     await (await owner.create_device("X")).create_control("temp", ControlType.VALUE, value=2)
 
-    await wait_until(lambda: len(events) == 5)
-    assert events == ["added", "value 1 after None", "removed", "added", "value 2 after None"]
+    # The driver erases the value before the meta, so the erasure comes before the removal
+    await wait_until(lambda: len(events) == 6)
+    assert events == [
+        "added",
+        "value 1 after None",
+        "value None after 1",
+        "removed",
+        "added",
+        "value 2 after None",
+    ]
     assert temp.is_own is (new_owner == "service")
     assert await client.get_control("X/temp") == temp
 

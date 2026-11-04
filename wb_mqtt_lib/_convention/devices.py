@@ -111,7 +111,8 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         handler(control, value, previous) on every set_value of an own control and every value a foreign
         driver publishes, also the same one, for pushbutton on every press. The same value sent again
-        on resubscription after reconnect is no event.
+        on resubscription after reconnect is no event. An erased value comes as None with the erased one
+        in previous.
 
         Called at once with previous=None when the value is known already. A new type of a foreign control
         reads the kept payload again and changes value without this event, only on_meta comes.
