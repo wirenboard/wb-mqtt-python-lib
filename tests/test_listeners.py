@@ -10,9 +10,9 @@ import pytest
 
 from tests.broker import (
     MosquittoBroker,
-    control_object,
-    device_object,
-    internals,
+    get_control_object,
+    get_device_object,
+    get_internals,
     publish_retained,
     wait_or_dump,
     wait_retained,
@@ -212,26 +212,26 @@ async def test_handler_on_a_device_the_client_does_not_read_is_refused(
     before that would never be called, so it raises. Own devices need no read.
     """
     temp = await (await driver.create_device("dev")).create_control("temp", ControlType.VALUE, value=1)
-    unread = device_object(client, "dev")
+    unread = get_device_object(client, "dev")
     registrations = [
         lambda: unread.on_added(lambda device: None),
         lambda: unread.on_control_value(lambda control, value, previous: None),
-        lambda: control_object(client, "dev/temp").on_value(lambda control, value, previous: None),
+        lambda: get_control_object(client, "dev/temp").on_value(lambda control, value, previous: None),
     ]
 
     for register in registrations:
         with pytest.raises(RuntimeError):
             register()
     with pytest.raises(RuntimeError):
-        await control_object(client, "dev/temp").wait_value(1, timeout=1)
-    assert internals(client)["listeners"] == 0
+        await get_control_object(client, "dev/temp").wait_value(1, timeout=1)
+    assert get_internals(client)["listeners"] == 0
 
     await client.get_device("dev")
     values = []
-    control_object(client, "dev/temp").on_value(lambda control, value, previous: values.append(value))
+    get_control_object(client, "dev/temp").on_value(lambda control, value, previous: values.append(value))
     await temp.set_value(2)
     await client.create_device("own")
-    device_object(client, "own").on_added(lambda device: None)
+    get_device_object(client, "own").on_added(lambda device: None)
 
     await wait_until(lambda: values == [1, 2])
 
@@ -260,7 +260,7 @@ async def test_remove_handler_through_any_object_of_the_name(driver: Client, cli
     remote_device.on_control_value(device_handler)
     remote_device.on_control_added(added)
     await wait_until(lambda: len(calls) == 4)
-    listeners = internals(client)["listeners"]
+    listeners = get_internals(client)["listeners"]
 
     (await client.get_control("dev/level")).remove_handler(control_handler)
     (await client.get_device("dev")).remove_handler(device_handler)
@@ -269,7 +269,7 @@ async def test_remove_handler_through_any_object_of_the_name(driver: Client, cli
     await device.create_control("other", ControlType.VALUE, value=3)
     await asyncio.sleep(0.3)
 
-    assert internals(client)["listeners"] == listeners - 4 and len(calls) == 4
+    assert get_internals(client)["listeners"] == listeners - 4 and len(calls) == 4
 
 
 @pytest.mark.parametrize("swallowed", [False, True], ids=["handler re-raises", "handler swallows"])
@@ -383,7 +383,7 @@ async def test_handler_with_the_wrong_arguments_is_refused_at_registration(
     with pytest.raises(TypeError):
         await client.raw.subscribe("/x", lambda: None)
 
-    assert internals(client)["listeners"] == 0
+    assert get_internals(client)["listeners"] == 0
     level.on_value(lambda *args: None)
 
 
@@ -540,7 +540,7 @@ async def test_wait_value_with_a_function(client: Client, level: Control) -> Non
 
     above_five = asyncio.ensure_future(level.wait_value(lambda value: value > 5, timeout=5))
     broken_wait = asyncio.ensure_future(level.wait_value(broken, timeout=5))
-    await wait_until(lambda: internals(client)["waits"] == 2)
+    await wait_until(lambda: get_internals(client)["waits"] == 2)
     for value in range(1, 11):
         await level.set_value(value)
 
@@ -549,4 +549,4 @@ async def test_wait_value_with_a_function(client: Client, level: Control) -> Non
         await wait_or_dump(broken_wait, timeout=2)
     with pytest.raises(ZeroDivisionError):
         await level.wait_value(lambda value: value / 0, timeout=1)
-    assert internals(client)["waits"] == 0
+    assert get_internals(client)["waits"] == 0

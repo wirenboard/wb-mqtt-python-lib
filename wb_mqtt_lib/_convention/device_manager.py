@@ -159,7 +159,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
     async def get_device_names(self) -> list[str]:
         self._raise_if_closed()
         retained = await self._subscriber.read_retained([topics.ALL_DEVICE_METAS, topics.ALL_CONTROL_METAS])
-        return _build_state(retained).existing_device_names()
+        return _build_state(retained).get_existing_device_names()
 
     async def get_device_snapshot(self, name: str) -> Optional[DeviceSnapshot]:
         self._raise_if_closed()
@@ -230,7 +230,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
         # Topics to erase, the controls in reverse order, then the error and the meta of the device
         to_erase = [
             topic
-            for control_name in reversed(self.state.existing_control_names(name))
+            for control_name in reversed(self.state.get_existing_control_names(name))
             for topic in _get_control_topics_to_erase(device.controls[control_name])
         ]
         if device.error:
@@ -420,7 +420,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
             [topics.ALL_DEVICE_METAS, topics.ALL_LEGACY_DRIVERS]
         )
         # Own devices the broker may not have yet, the replay after reconnect is still on its way
-        own = self.state.own_device_names()
+        own = self.state.get_own_device_names()
         names = sorted({*_get_driver_device_names(self._driver, signatures), *own})
 
         # Own devices through remove_device, then whatever is left under the name
@@ -694,7 +694,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
         """
         await erasure_done
         await self._subscriber.unsubscribe(
-            topics.command_filter(name), self._on_command, still_needed=lambda: self.state.is_own_device(name)
+            topics.command_filter(name),
+            self._on_command,
+            is_still_needed=lambda: self.state.is_own_device(name),
         )
 
     async def _wait_for_broker(self, pending: asyncio.Future) -> None:

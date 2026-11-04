@@ -10,7 +10,7 @@ import pytest
 
 from tests.broker import (
     MosquittoBroker,
-    device_object,
+    get_device_object,
     read_retained,
     wait_or_dump,
     wait_until,
@@ -87,7 +87,7 @@ async def test_same_name_created_by_two_clients_at_once_ends_with_an_owner(
         assert all(isinstance(result, (Device, DeviceTakenError)) for result in results), results
 
     for name in names:
-        owners = {client.driver for client in (first, second) if device_object(client, name).is_own}
+        owners = {client.driver for client in (first, second) if get_device_object(client, name).is_own}
         retained = await read_retained(broker.port, f"/devices/{name}/meta")
         assert json.loads(retained[f"/devices/{name}/meta"])["driver"] in owners, name
 

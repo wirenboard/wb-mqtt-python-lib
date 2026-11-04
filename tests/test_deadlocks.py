@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 
 import pytest
 
-from tests.broker import MosquittoBroker, internals, wait_or_dump, wait_until
+from tests.broker import MosquittoBroker, get_internals, wait_or_dump, wait_until
 from tests.conftest import ConnectClient
 from wb_mqtt_lib import Client, Control, ControlType, Message
 from wb_mqtt_lib._convention import topics
@@ -97,8 +97,8 @@ async def test_concurrent_subscribe_and_unsubscribe_on_one_topic(
     await asyncio.sleep(0.2)
     assert sorted(received) == [("second", index) for index in range(20)]
     await asyncio.gather(*(client.raw.unsubscribe(handler) for handler in second_batch))
-    assert internals(client)["subscriptions"] == 0
-    assert broker.unsubscriptions() == ["/race/topic"]
+    assert get_internals(client)["subscriptions"] == 0
+    assert broker.get_unsubscriptions() == ["/race/topic"]
 
 
 @pytest.mark.parametrize("seed", range(3))
@@ -124,7 +124,7 @@ async def test_wait_value_racing_its_timeout(client: Client, level: Control, see
         await wait_or_dump(one_round(target), timeout=2)
 
     assert sum(outcomes.values()) == 100
-    assert internals(client)["waits"] == 0
+    assert get_internals(client)["waits"] == 0
 
 
 async def test_many_handlers_get_one_new_device_at_once(
@@ -145,12 +145,12 @@ async def test_many_handlers_get_one_new_device_at_once(
 
     for _ in range(20):
         level.on_value(make_handler())
-    subscriptions_before = internals(client)["subscriptions"]
+    subscriptions_before = get_internals(client)["subscriptions"]
     await level.set_value(1)
 
     await wait_until(lambda: len(found) == 20)
     assert found == [42] * 20
-    assert internals(client)["subscriptions"] == subscriptions_before + len(topics.watch_filters("other"))
+    assert get_internals(client)["subscriptions"] == subscriptions_before + len(topics.watch_filters("other"))
 
 
 async def test_command_handler_creates_and_removes_a_device(connect: ConnectClient, client: Client) -> None:

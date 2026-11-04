@@ -11,8 +11,8 @@ from tests.broker import (
     DeadLinkProxy,
     MosquittoBroker,
     Send,
+    get_internals,
     intercept_publish,
-    internals,
     lose_end_markers,
     wait_or_dump,
     wait_until,
@@ -54,8 +54,8 @@ async def test_read_and_erase_recipe(broker: MosquittoBroker, client: Client) ->
         await client.raw.publish(topic, "", retain=True)
 
     assert await client.raw.read("/devices/old/#") == {}
-    assert internals(client)["replay mirror"] == 0
-    assert broker.unsubscriptions() == ["/devices/old/#"] * 2
+    assert get_internals(client)["replay mirror"] == 0
+    assert broker.get_unsubscriptions() == ["/devices/old/#"] * 2
 
 
 async def test_one_handler_on_several_filters_until_removed(broker: MosquittoBroker, client: Client) -> None:
@@ -83,8 +83,8 @@ async def test_one_handler_on_several_filters_until_removed(broker: MosquittoBro
     await wait_until(lambda: len(after) == 1)
 
     assert received == ["zigbee2mqtt/bridge/devices", "zigbee2mqtt/bridge/groups", "zigbee2mqtt/bridge/state"]
-    assert internals(client)["subscriptions"] == 1
-    assert sorted(broker.unsubscriptions()) == [
+    assert get_internals(client)["subscriptions"] == 1
+    assert sorted(broker.get_unsubscriptions()) == [
         "zigbee2mqtt/bridge/#",
         "zigbee2mqtt/bridge/devices",
         "zigbee2mqtt/bridge/groups",
@@ -98,7 +98,7 @@ async def test_unsubscribe_cancelled_midway_still_takes_the_handler_off_every_fi
     The handler still goes off the other filters and gets nothing more.
     """
     received: list[str] = []
-    baseline = internals(client)
+    baseline = get_internals(client)
 
     def handler(message: Message) -> None:
         received.append(message.topic)
@@ -111,10 +111,10 @@ async def test_unsubscribe_cancelled_midway_still_takes_the_handler_off_every_fi
     with pytest.raises(asyncio.CancelledError):
         await call
 
-    await wait_until(lambda: internals(client)["subscriptions"] == baseline["subscriptions"])
+    await wait_until(lambda: get_internals(client)["subscriptions"] == baseline["subscriptions"])
     await client.raw.publish("c/x", "1")
     await asyncio.sleep(0.2)
-    assert not received and internals(client) == baseline
+    assert not received and get_internals(client) == baseline
 
 
 @pytest.mark.parametrize("filter_held", [False, True], ids=["new filters", "filter held by another handler"])
@@ -334,19 +334,19 @@ async def test_subscribe_cancelled_after_unsubscribe_of_its_handler_changes_noth
     other.
     """
     received: list[str] = []
-    baseline = internals(client)
+    baseline = get_internals(client)
 
     def handler(message: Message) -> None:
         received.append(message.topic)
 
     lose_end_markers(client, monkeypatch)
     first = asyncio.ensure_future(client.raw.subscribe("/a/#", handler))
-    await wait_until(lambda: internals(client)["subscriptions"] == baseline["subscriptions"] + 1)
+    await wait_until(lambda: get_internals(client)["subscriptions"] == baseline["subscriptions"] + 1)
     await client.raw.unsubscribe(handler)
     second = None
     if added_again:
         second = asyncio.ensure_future(client.raw.subscribe("/b/#", handler))
-        await wait_until(lambda: internals(client)["subscriptions"] == baseline["subscriptions"] + 1)
+        await wait_until(lambda: get_internals(client)["subscriptions"] == baseline["subscriptions"] + 1)
 
     first.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -362,8 +362,8 @@ async def test_subscribe_cancelled_after_unsubscribe_of_its_handler_changes_noth
     await asyncio.sleep(0.2)
     held = 1 if added_again else 0
     assert received == (["/b/x"] if added_again else [])
-    assert internals(client)["subscriptions"] == baseline["subscriptions"] + held
-    assert internals(client)["listeners"] == baseline["listeners"] + held
+    assert get_internals(client)["subscriptions"] == baseline["subscriptions"] + held
+    assert get_internals(client)["listeners"] == baseline["listeners"] + held
 
 
 async def test_handler_subscribed_again_while_its_first_subscription_is_on_the_way_waits_for_it(

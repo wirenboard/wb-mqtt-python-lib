@@ -53,6 +53,10 @@ class Control:  # pylint: disable=too-many-public-methods
     def __hash__(self) -> int:
         return hash(self.full_name)
 
+    # ------------------------------------------------------------
+    # Fields
+    # ------------------------------------------------------------
+
     @property
     def full_name(self) -> str:
         """
@@ -101,6 +105,10 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         record = self._record
         return record.error if record and record.exists else ControlErrorFlags.NONE
+
+    # ------------------------------------------------------------
+    # Event handlers and waits
+    # ------------------------------------------------------------
 
     def on_added(self, handler: ControlHandler) -> ControlHandler:
         """
@@ -183,6 +191,10 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         return await self._device_manager.wait_control_value(self.device.name, self.name, expected, timeout)
 
+    # ------------------------------------------------------------
+    # Changes and commands
+    # ------------------------------------------------------------
+
     async def set_value(self, value: Any) -> None:
         """
         Set the value of an own control or send a command to /on of a foreign one.
@@ -260,6 +272,10 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         await self._device_manager.remove_control(self.device.name, self.name)
 
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
+
     def _listen(self, event: ControlEvent, handler: Any) -> Any:
         self._device_manager.add_control_listener(self.device.name, self.name, event, handler)
         return handler
@@ -293,6 +309,10 @@ class Device:  # pylint: disable=too-many-public-methods
 
     def __hash__(self) -> int:
         return hash(self.name)
+
+    # ------------------------------------------------------------
+    # Fields
+    # ------------------------------------------------------------
 
     @property
     def exists(self) -> bool:
@@ -330,8 +350,12 @@ class Device:  # pylint: disable=too-many-public-methods
         """
         return {
             name: Control(self.name, name, self._device_manager)
-            for name in self._device_manager.state.existing_control_names(self.name)
+            for name in self._device_manager.state.get_existing_control_names(self.name)
         }
+
+    # ------------------------------------------------------------
+    # Event handlers
+    # ------------------------------------------------------------
 
     def on_added(self, handler: DeviceHandler) -> DeviceHandler:
         """
@@ -415,6 +439,10 @@ class Device:  # pylint: disable=too-many-public-methods
         unless remove_handler is called from that handler itself.
         """
         self._device_manager.state.remove_device_listener(self.name, handler)
+
+    # ------------------------------------------------------------
+    # Changes
+    # ------------------------------------------------------------
 
     async def create_control(  # pylint: disable=too-many-arguments,too-many-positional-arguments
         self,
@@ -534,6 +562,10 @@ class Device:  # pylint: disable=too-many-public-methods
                 changes, what went out already is taken back.
         """
         await self._device_manager.remove_device(self.name)
+
+    # ------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------
 
     def _listen(self, event: DeviceEvent, handler: Any) -> Any:
         self._device_manager.add_device_listener(self.name, event, handler)

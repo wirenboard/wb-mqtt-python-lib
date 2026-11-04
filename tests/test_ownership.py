@@ -14,9 +14,9 @@ from tests.broker import (
     MosquittoBroker,
     Send,
     cancel_and_wait,
-    device_object,
+    get_device_object,
+    get_internals,
     intercept_publish,
-    internals,
     publish_retained,
     read_retained,
     restart_broker,
@@ -152,7 +152,7 @@ async def test_create_device_leaves_a_device_of_another_driver_alone(
         await client.create_device("X")
 
     assert await read_retained(broker.port, "/devices/X/#") == before
-    assert internals(client)["subscriptions"] == 0
+    assert get_internals(client)["subscriptions"] == 0
 
 
 @NAME_HOLDERS
@@ -298,22 +298,22 @@ async def test_create_device_cancelled_at_any_point_leaves_the_name_usable(
         attempt = asyncio.ensure_future(client.create_device("X"))
         await asyncio.sleep(delay)
         await cancel_and_wait(attempt)
-        cancelled = device_object(client, "X")
+        cancelled = get_device_object(client, "X")
         if cancelled.is_own:
             await wait_retained(
                 broker.port, "/devices/X/#", {"/devices/X/meta": b'{"driver": "test-service"}'}
             )
-            await wait_until(lambda: internals(client)["subscriptions"] == 1)
+            await wait_until(lambda: get_internals(client)["subscriptions"] == 1)
             await cancelled.remove()
         else:
             assert await read_retained(broker.port, "/devices/X/#") == {}, delay
-        await wait_until(lambda: internals(client)["subscriptions"] == 0)
+        await wait_until(lambda: get_internals(client)["subscriptions"] == 0)
 
         device = await wait_or_dump(client.create_device("X"), timeout=5)
 
         assert device.is_own, delay
         await device.remove()
-    assert internals(client)["subscriptions"] == 0
+    assert get_internals(client)["subscriptions"] == 0
 
 
 async def test_create_device_cancelled_while_its_leftovers_are_erased_still_ends_own(
@@ -336,9 +336,9 @@ async def test_create_device_cancelled_while_its_leftovers_are_erased_still_ends
     with pytest.raises(asyncio.CancelledError):
         await wait_or_dump(attempt, timeout=5)
 
-    await wait_until(lambda: device_object(client, "X").is_own)
+    await wait_until(lambda: get_device_object(client, "X").is_own)
     await wait_retained(broker.port, "/devices/X/#", {"/devices/X/meta": b'{"driver": "service"}'})
-    await wait_until(lambda: internals(client)["subscriptions"] == 1)
+    await wait_until(lambda: get_internals(client)["subscriptions"] == 1)
 
 
 @pytest.mark.parametrize("cancelled", [False, True], ids=["awaited", "cancelled"])
@@ -376,7 +376,7 @@ async def test_create_device_ends_own_when_the_link_drops_while_its_leftovers_ar
         else:
             assert (await wait_or_dump(attempt, timeout=10)).is_own
 
-        await wait_until(lambda: device_object(client, "X").is_own)
+        await wait_until(lambda: get_device_object(client, "X").is_own)
         await proxy.restore(client)
         await wait_retained(broker.port, "/devices/X/#", {"/devices/X/meta": b'{"driver": "service"}'})
     finally:
@@ -401,7 +401,7 @@ async def test_two_creates_of_one_name_over_leftovers_make_one_device(
 
     assert sorted(type(result).__name__ for result in results) == ["AlreadyCreatedError", "Device"]
     await wait_retained(broker.port, "/devices/X/#", {"/devices/X/meta": b'{"driver": "service"}'})
-    assert internals(client)["subscriptions"] == 1
+    assert get_internals(client)["subscriptions"] == 1
 
 
 async def test_device_created_over_a_foreign_one_gone_unnoticed_starts_clean(

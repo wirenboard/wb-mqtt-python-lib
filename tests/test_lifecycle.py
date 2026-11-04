@@ -18,8 +18,8 @@ from tests.broker import (
     Send,
     ack_timeout,
     cancel_and_wait,
+    get_internals,
     intercept_publish,
-    internals,
     lose_end_markers,
     silent_server,
     wait_for_task_count,
@@ -62,7 +62,9 @@ async def test_close_from_a_command_handler(connect: ConnectClient, client: Clie
     await user.raw.publish("/devices/dev/controls/stop/on", "1")
 
     assert await wait_or_dump(closed, timeout=5) is False
-    await wait_until(lambda: internals(client)["listeners"] == 0 and internals(client)["service tasks"] == 0)
+    await wait_until(
+        lambda: get_internals(client)["listeners"] == 0 and get_internals(client)["service tasks"] == 0
+    )
 
 
 async def test_close_from_a_background_task_and_from_outside_at_once(client: Client) -> None:
@@ -76,8 +78,8 @@ async def test_close_from_a_background_task_and_from_outside_at_once(client: Cli
 
     assert (
         not client.is_connected
-        and internals(client)["service tasks"] == 0
-        and internals(client)["listeners"] == 0
+        and get_internals(client)["service tasks"] == 0
+        and get_internals(client)["listeners"] == 0
     )
 
 
@@ -113,18 +115,18 @@ async def test_close_cancels_tasks_and_handlers_that_wait_for_the_broker(
     looping = client.start_task(poll_forever())
     await wait_or_dump(started.wait(), timeout=2)
     await asyncio.sleep(0.1)
-    waits = internals(client)["waits"]
+    waits = get_internals(client)["waits"]
     outside = [
         asyncio.ensure_future(level.wait_value(never, timeout=60)),
         asyncio.ensure_future(client.get_control("missing/ctl", timeout=60)),
         asyncio.ensure_future(client.get_device("missing_dev", timeout=60)),
     ]
-    await wait_until(lambda: internals(client)["waits"] == waits + len(outside))
+    await wait_until(lambda: get_internals(client)["waits"] == waits + len(outside))
 
     await wait_or_dump(client.close(), timeout=3)
 
     assert waiting.cancelled() and looping.cancelled() and not caught
-    assert internals(client)["listeners"] == 0 and internals(client)["service tasks"] == 0
+    assert get_internals(client)["listeners"] == 0 and get_internals(client)["service tasks"] == 0
     assert not client.is_connected
     for wait in outside:
         with pytest.raises(ClientClosedError):
@@ -143,14 +145,14 @@ async def test_calls_after_close_raise_instead_of_hanging(driver: Client, client
     raw_handler = await client.raw.subscribe("/raw/#", lambda message: None)
     control_handler = foreign.on_value(lambda control, value, previous: None)
     connection_handler = client.on_connection_change(lambda connected: None)
-    subscriptions = internals(client)["subscriptions"]
+    subscriptions = get_internals(client)["subscriptions"]
 
     await wait_or_dump(client.close(), timeout=5)
 
     await wait_or_dump(client.raw.unsubscribe(raw_handler), timeout=2)
     foreign.remove_handler(control_handler)
     client.remove_handler(connection_handler)
-    assert internals(client)["subscriptions"] == subscriptions - 1
+    assert get_internals(client)["subscriptions"] == subscriptions - 1
 
     calls = [
         temp.set_value(2),

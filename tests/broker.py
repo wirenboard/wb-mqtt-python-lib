@@ -46,7 +46,7 @@ BROKER_READS: dict[str, Callable[[Any], Awaitable[Any]]] = {
 }
 
 
-def internals(client: Any) -> dict[str, int]:
+def get_internals(client: Any) -> dict[str, int]:
     """
     Counts inside a client that would grow on a leak.
     """
@@ -69,7 +69,7 @@ def lose_end_markers(client: Any, monkeypatch: Any) -> None:
     monkeypatch.setattr(client._subscriber, "_marker_arrived", lambda topic: None)
 
 
-def device_object(client: Any, name: str) -> Any:
+def get_device_object(client: Any, name: str) -> Any:
     """
     Device object of the client by name without a read of the broker, the way the client builds it
     for a handler.
@@ -77,9 +77,9 @@ def device_object(client: Any, name: str) -> Any:
     return client._make_device(name)  # pylint: disable=protected-access
 
 
-def control_object(client: Any, full_name: str) -> Any:
+def get_control_object(client: Any, full_name: str) -> Any:
     """
-    Control object of the client by «device/control», see device_object.
+    Control object of the client by «device/control», see get_device_object.
     """
     device_name, _, control_name = full_name.partition("/")
     return client._make_control(device_name, control_name)  # pylint: disable=protected-access
@@ -195,10 +195,6 @@ class MosquittoBroker:
     def __exit__(self, *exc_info: Any) -> None:
         self.cleanup()
 
-    @property
-    def _password_file(self) -> Path:
-        return self._config.with_name("passwd")
-
     def url(self, transport: str = "tcp", login: str = "") -> str:
         """
         Broker URL for the library. login is «user:password».
@@ -208,7 +204,7 @@ class MosquittoBroker:
             return f"unix://{credentials}{self.socket_path}"
         return f"{transport}://{credentials}{HOST}:{self.ws_port if transport == 'ws' else self.port}"
 
-    def subscriptions(self) -> list[tuple[str, int]]:
+    def get_subscriptions(self) -> list[tuple[str, int]]:
         """
         (filter, QoS) of every subscription the broker took, in order, from its log.
         """
@@ -220,7 +216,7 @@ class MosquittoBroker:
                 found.append((parts[3], int(parts[2])))
         return found
 
-    def unsubscriptions(self) -> list[str]:
+    def get_unsubscriptions(self) -> list[str]:
         """
         Filter of every unsubscription the broker took, in order, from its log.
         """
@@ -304,6 +300,10 @@ class MosquittoBroker:
                     if time.monotonic() > deadline:
                         raise TimeoutError(f"mosquitto does not listen on {address}") from error
                     time.sleep(0.02)
+
+    @property
+    def _password_file(self) -> Path:
+        return self._config.with_name("passwd")
 
 
 def describe_tasks() -> str:
@@ -432,7 +432,7 @@ async def wait_retained(
     return retained
 
 
-async def window_of_controls(client: Any, monkeypatch: Any) -> list[Any]:
+async def create_window_of_controls(client: Any, monkeypatch: Any) -> list[Any]:
     """
     Shrink the send window to TEST_SEND_WINDOW and create own controls c0, c1 and so on of the device dev,
     as many as the window holds, of type value with the value 0.

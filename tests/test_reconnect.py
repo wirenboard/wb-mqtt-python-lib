@@ -22,15 +22,15 @@ from tests.broker import (
     MosquittoBroker,
     Send,
     ack_timeout,
+    create_window_of_controls,
+    get_internals,
     intercept_publish,
-    internals,
     read_retained,
     restart_broker,
     wait_for_task_count,
     wait_or_dump,
     wait_retained,
     wait_until,
-    window_of_controls,
 )
 from tests.conftest import ConnectClient
 from wb_mqtt_lib import BrokerDisconnectedError, Client, Control, ControlType, Message
@@ -164,7 +164,7 @@ async def test_restart_storm_ends_in_consistent_state(
     """
     level = await (await driver.create_device("dev")).create_control("level", ControlType.VALUE, value=0)
     remote = await client.get_control("dev/level")
-    client_baseline, driver_baseline = internals(client), internals(driver)
+    client_baseline, driver_baseline = get_internals(client), get_internals(driver)
     tasks_before = len(asyncio.all_tasks())
     stop = asyncio.Event()
 
@@ -184,7 +184,9 @@ async def test_restart_storm_ends_in_consistent_state(
     last = await wait_or_dump(publisher, timeout=10)
 
     await wait_until(lambda: remote.value == last, timeout=15)
-    await wait_until(lambda: internals(client) == client_baseline and internals(driver) == driver_baseline)
+    await wait_until(
+        lambda: get_internals(client) == client_baseline and get_internals(driver) == driver_baseline
+    )
     # An attempt that broke right after the socket opened leaves the misc task of aiomqtt until paho closes
     # that socket by keepalive
     await wait_for_task_count(tasks_before, timeout=2 * broker_connection.KEEPALIVE_S)
@@ -226,14 +228,14 @@ async def test_broker_reads_without_a_link_raise_and_work_after_reconnect(
     Everything that reads the broker raises BrokerDisconnectedError without a link, leaves nothing behind
     and works after reconnect.
     """
-    before = internals(client)
+    before = get_internals(client)
     await asyncio.to_thread(broker.stop)
     await wait_until(lambda: not client.is_connected)
 
     with pytest.raises(BrokerDisconnectedError):
         await wait_or_dump(BROKER_READS[call](client), timeout=5)
 
-    assert internals(client) == before
+    assert get_internals(client) == before
     await asyncio.to_thread(broker.start)
     await wait_until(lambda: client.is_connected, timeout=10)
     await wait_or_dump(BROKER_READS[call](client), timeout=5)
@@ -251,7 +253,7 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
     character, a non-character or more than 200 slashes mosquitto drops the connection.
     """
     await (await client.create_device("dev")).create_control("temp", ControlType.VALUE, value=21)
-    before = internals(client)
+    before = get_internals(client)
     if offline:
         await asyncio.to_thread(broker.stop)
         await wait_until(lambda: not client.is_connected)
@@ -303,7 +305,7 @@ async def test_invalid_publication_or_filter_is_refused_before_it_reaches_the_re
         with pytest.raises(error):
             await call
 
-    assert internals(client) == before
+    assert get_internals(client) == before
     await asyncio.to_thread(broker.start if offline else broker.restart)
     await wait_until(lambda: client.is_connected, timeout=10)
     await wait_retained(broker.port, "/devices/dev/#", OWN_DEVICE)
@@ -650,7 +652,7 @@ async def test_queued_event_without_puback_in_time_fails_and_does_not_go_again(
     commands: list[bool] = []
     relay.on_command(lambda control, value: commands.append(value))
     remote = await client.get_control("relays/K1")
-    controls = await window_of_controls(client, monkeypatch)
+    controls = await create_window_of_controls(client, monkeypatch)
     release = asyncio.Event()
     lost: list[str] = []
 
@@ -913,7 +915,7 @@ async def test_own_publication_that_fails_unexpectedly_leaves_the_mirror_and_the
     for name in ("a", "b", "c"):
         await device.create_control(name, ControlType.VALUE, value=1)
     expected = await read_retained(broker.port, "/devices/dev/#")
-    mirrored = internals(client)["replay mirror"]
+    mirrored = get_internals(client)["replay mirror"]
     broken: list[str] = []
 
     async def break_one_publication(send: Send, topic: str, _payload: Any) -> None:
@@ -927,7 +929,7 @@ async def test_own_publication_that_fails_unexpectedly_leaves_the_mirror_and_the
 
     del expected["/devices/dev/controls/b"]
     await wait_retained(broker.port, "/devices/dev/#", expected)
-    assert broken and internals(client)["replay mirror"] == mirrored - 1
+    assert broken and get_internals(client)["replay mirror"] == mirrored - 1
 
 
 async def test_session_that_fails_unexpectedly_is_started_again(

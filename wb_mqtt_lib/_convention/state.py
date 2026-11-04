@@ -226,13 +226,13 @@ class State:  # pylint: disable=too-many-public-methods
             device.controls[control_name] = control
         return control
 
-    def existing_device_names(self) -> list[str]:
+    def get_existing_device_names(self) -> list[str]:
         return sorted(name for name, device in self._devices.items() if device.exists)
 
-    def own_device_names(self) -> list[str]:
+    def get_own_device_names(self) -> list[str]:
         return sorted(name for name, device in self._devices.items() if device.ownership is Ownership.OWN)
 
-    def existing_control_names(self, device_name: str) -> list[str]:
+    def get_existing_control_names(self, device_name: str) -> list[str]:
         device = self._devices.get(device_name)
         if device is None:
             return []
@@ -338,7 +338,7 @@ class State:  # pylint: disable=too-many-public-methods
         # Events of every control of the device
         initial_calls = [
             call
-            for control_name in self.existing_control_names(device_name)
+            for control_name in self.get_existing_control_names(device_name)
             for call in self._get_initial_calls(device_name, control_name, event.control_event)
         ]
         device.listeners.add_handler(event, handler, initial_calls)
@@ -543,7 +543,7 @@ class State:  # pylint: disable=too-many-public-methods
         """
         # Nothing of the former owner stays
         device = self._devices[device_name]
-        for control_name in self.existing_control_names(device_name):
+        for control_name in self.get_existing_control_names(device_name):
             self.mark_control_removed(device_name, control_name)
         for control_name, control in list(device.controls.items()):
             control.payload = None
@@ -572,7 +572,7 @@ class State:  # pylint: disable=too-many-public-methods
         """
         device = self._devices[device_name]
         device.ownership = Ownership.REMOVED
-        for control_name in reversed(self.existing_control_names(device_name)):
+        for control_name in reversed(self.get_existing_control_names(device_name)):
             self.mark_control_removed(device_name, control_name)
         self.set_device_error(device_name, ControlErrorFlags.NONE)
         self.clear_device_meta(device_name)

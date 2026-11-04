@@ -226,18 +226,18 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         self,
         topic_filter: str,
         callback: MessageCallback,
-        still_needed: Optional[Callable[[], bool]] = None,
+        is_still_needed: Optional[Callable[[], bool]] = None,
     ) -> None:
         """
         Remove a callback. The broker subscription goes away with the last callback.
 
         Args:
-            still_needed: a function without arguments, called under the lock right before the removal.
+            is_still_needed: a function without arguments, called under the lock right before the removal.
                 True leaves the callback subscribed. It is for a caller whose reason to unsubscribe may be
                 gone while it waited for the lock.
         """
         async with self._lock:
-            if still_needed is not None and still_needed():
+            if is_still_needed is not None and is_still_needed():
                 return
 
             # The callback leaves the subscription

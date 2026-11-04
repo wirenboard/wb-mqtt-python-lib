@@ -101,7 +101,7 @@ async def test_subscriptions_go_with_qos_0_and_publications_with_qos_1(
     await driver.raw.publish("/raw/x", "1", qos=1)
     await wait_until(lambda: bool(raw_messages and published))
 
-    subscriptions = broker.subscriptions()
+    subscriptions = broker.get_subscriptions()
 
     def granted(topic: str) -> set[int]:
         return {qos for topic_filter, qos in subscriptions if aiomqtt.Topic(topic).matches(topic_filter)}

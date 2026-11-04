@@ -20,8 +20,8 @@ import pytest
 
 from tests.broker import (
     MosquittoBroker,
-    control_object,
-    internals,
+    get_control_object,
+    get_internals,
     wait_or_dump,
     wait_until,
 )
@@ -119,11 +119,11 @@ async def test_create_and_remove_cycles_do_not_grow(connect: ConnectClient, clie
         await wait_until(lambda: not remote.exists)
 
     growth = await wait_or_dump(object_growth(cycle), timeout=120)
-    client_counts, reader_counts = internals(client), internals(reader)
+    client_counts, reader_counts = get_internals(client), get_internals(reader)
     await wait_or_dump(cycle(0), timeout=10)
 
     assert not growth
-    assert (internals(client), internals(reader)) == (client_counts, reader_counts)
+    assert (get_internals(client), get_internals(reader)) == (client_counts, reader_counts)
 
 
 async def test_raw_subscribe_read_and_unsubscribe_cycles_leave_nothing(client: Client) -> None:
@@ -147,7 +147,7 @@ async def test_raw_subscribe_read_and_unsubscribe_cycles_leave_nothing(client: C
     growth = await wait_or_dump(object_growth(cycle), timeout=120)
 
     assert not growth
-    assert internals(client) == {
+    assert get_internals(client) == {
         "subscriptions": 0,
         # own retained raw publications, kept for the replay after reconnect
         "replay mirror": 5,
@@ -174,7 +174,7 @@ async def test_waits_that_time_out_leave_nothing(client: Client, level: Control)
     growth = await wait_or_dump(object_growth(cycle), timeout=60)
 
     assert not growth
-    assert internals(client)["waits"] == 0
+    assert get_internals(client)["waits"] == 0
 
 
 async def test_failing_handlers_leave_nothing(client: Client, level: Control) -> None:
@@ -191,13 +191,13 @@ async def test_failing_handlers_leave_nothing(client: Client, level: Control) ->
         raise RuntimeError("task failed")
 
     level.on_value(failing)
-    listeners_before = internals(client)["listeners"]
+    listeners_before = get_internals(client)["listeners"]
     for value in range(1, 101):
         await level.set_value(value)
         client.start_task(failing_task(), "failing work")
 
-    await wait_until(lambda: calls[-1:] == [100] and internals(client)["service tasks"] == 0)
-    assert internals(client)["listeners"] == listeners_before
+    await wait_until(lambda: calls[-1:] == [100] and get_internals(client)["service tasks"] == 0)
+    assert get_internals(client)["listeners"] == listeners_before
 
 
 async def test_handlers_and_waits_on_ever_new_controls_leave_nothing(driver: Client, client: Client) -> None:
@@ -213,13 +213,13 @@ async def test_handlers_and_waits_on_ever_new_controls_leave_nothing(driver: Cli
 
     async def cycle(index: int) -> None:
         own = await device.create_control(f"c{index}", ControlType.VALUE, value=1)
-        remote = control_object(client, f"dev/c{index}")
+        remote = get_control_object(client, f"dev/c{index}")
         remote.on_value(handler)
         await own.remove()
         await wait_until(lambda: not remote.exists)
         remote.remove_handler(handler)
         with pytest.raises(TimeoutError):
-            await control_object(client, f"dev/missing{index}").wait_value(1, timeout=0.001)
+            await get_control_object(client, f"dev/missing{index}").wait_value(1, timeout=0.001)
         with pytest.raises(TimeoutError):
             await client.get_control(f"dev/absent{index}", timeout=0.001)
 

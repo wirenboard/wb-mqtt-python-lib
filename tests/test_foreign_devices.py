@@ -11,8 +11,8 @@ import pytest
 from tests.broker import (
     DeadLinkProxy,
     MosquittoBroker,
-    device_object,
-    internals,
+    get_device_object,
+    get_internals,
     publish_retained,
     read_retained,
     wait_or_dump,
@@ -225,7 +225,7 @@ async def test_get_device_names_reads_once_without_keeping_subscriptions(
     names = await client.get_device_names()
 
     assert names == ["legacy", "with_controls", "with_meta"]
-    assert internals(client)["subscriptions"] == 0
+    assert get_internals(client)["subscriptions"] == 0
 
 
 async def test_device_snapshot_has_the_fields_of_the_live_objects_and_stays_as_read(
@@ -249,7 +249,7 @@ async def test_device_snapshot_has_the_fields_of_the_live_objects_and_stays_as_r
 
     snapshot = await client.get_device_snapshot("dev")
 
-    assert internals(client)["subscriptions"] == 0
+    assert get_internals(client)["subscriptions"] == 0
     remote = await client.get_device("dev")
     assert set(snapshot.controls) == set(remote.controls) == {"temp", "relay", "status", "button"}
     assert (snapshot.name, snapshot.meta, snapshot.error) == (remote.name, remote.meta, remote.error)
@@ -402,7 +402,7 @@ async def test_wait_ends_when_the_name_appears_or_at_the_timeout(
     timeout = 1 if appearance == "never" else 5
     control_wait = asyncio.ensure_future(client.get_control("late/temp", timeout=timeout))
     device_wait = asyncio.ensure_future(client.get_device("late", timeout=timeout))
-    await wait_until(lambda: internals(client)["waits"] == 2)
+    await wait_until(lambda: get_internals(client)["waits"] == 2)
 
     if appearance == "device and control":
         await (await driver.create_device("late")).create_control("temp", ControlType.VALUE, value=1)
@@ -414,7 +414,7 @@ async def test_wait_ends_when_the_name_appears_or_at_the_timeout(
         assert [type(result) for result in results] == [TimeoutError, TimeoutError]
     else:
         assert all(result.exists for result in results)
-    assert internals(client)["waits"] == 0
+    assert get_internals(client)["waits"] == 0
 
 
 async def test_malformed_foreign_meta_does_not_break_reading(connect: ConnectClient) -> None:
@@ -513,7 +513,7 @@ async def test_control_address_without_a_slash_is_refused(client: Client) -> Non
     with pytest.raises(InvalidNameError):
         await client.get_control("dev")
 
-    assert internals(client)["subscriptions"] == 0
+    assert get_internals(client)["subscriptions"] == 0
 
 
 async def test_cancelled_get_control_does_not_cancel_the_shared_subscription(
@@ -532,9 +532,9 @@ async def test_cancelled_get_control_does_not_cancel_the_shared_subscription(
     control = await wait_or_dump(second, timeout=3)
     with pytest.raises(asyncio.CancelledError):
         await first
-    subscriptions = internals(client)["subscriptions"]
+    subscriptions = get_internals(client)["subscriptions"]
     again = await wait_or_dump(client.get_control("dev/temp"), timeout=3)
-    assert again == control and control.value == 1 and internals(client)["subscriptions"] == subscriptions
+    assert again == control and control.value == 1 and get_internals(client)["subscriptions"] == subscriptions
 
 
 async def test_subscription_that_fails_after_its_caller_gave_up_is_tried_again(
@@ -563,10 +563,10 @@ async def test_subscription_that_fails_after_its_caller_gave_up_is_tried_again(
     def handler_refused() -> bool:
         # The subscription fails once its wait for the broker ends, up to the 5 s of an answer
         try:
-            device_object(client, "dev").on_added(on_added)
+            get_device_object(client, "dev").on_added(on_added)
         except RuntimeError:
             return True
-        device_object(client, "dev").remove_handler(on_added)
+        get_device_object(client, "dev").remove_handler(on_added)
         return False
 
     await wait_until(handler_refused, timeout=15)

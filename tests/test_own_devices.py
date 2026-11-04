@@ -15,17 +15,17 @@ from tests.broker import (
     MosquittoBroker,
     Send,
     cancel_and_wait,
-    control_object,
-    device_object,
+    create_window_of_controls,
+    get_control_object,
+    get_device_object,
+    get_internals,
     intercept_publish,
-    internals,
     publish_retained,
     read_retained,
     restart_broker,
     wait_or_dump,
     wait_retained,
     wait_until,
-    window_of_controls,
 )
 from tests.conftest import ConnectClient
 from wb_mqtt_lib import (
@@ -476,7 +476,7 @@ async def test_invalid_name_is_refused_before_the_broker_hears_of_it(
     or publishes anything.
     """
     device = await client.create_device("dev")
-    subscriptions = internals(client)["subscriptions"]
+    subscriptions = get_internals(client)["subscriptions"]
     calls = [
         client.create_device(name),
         device.create_control(name, ControlType.VALUE),
@@ -493,7 +493,7 @@ async def test_invalid_name_is_refused_before_the_broker_hears_of_it(
         Client(name)
     assert isinstance(error.value, MqttLibError) and isinstance(error.value, ValueError)
 
-    assert internals(client)["subscriptions"] == subscriptions
+    assert get_internals(client)["subscriptions"] == subscriptions
     assert list(await read_retained(broker.port, "#")) == ["/devices/dev/meta"]
 
 
@@ -567,14 +567,14 @@ async def test_device_and_control_exist_once(client: Client) -> None:
     assert isinstance(error.value, MqttLibError) and isinstance(error.value, ValueError)
     with pytest.raises(AlreadyCreatedError):
         await device.create_control("c", ControlType.VALUE)
-    subscriptions = internals(client)["subscriptions"]
+    subscriptions = get_internals(client)["subscriptions"]
     results = await asyncio.gather(
         client.create_device("Y"), client.create_device("Y"), return_exceptions=True
     )
 
     assert sorted(type(result).__name__ for result in results) == ["AlreadyCreatedError", "Device"]
     # the commands to the controls of Y, an own device is not followed otherwise
-    assert internals(client)["subscriptions"] == subscriptions + 1
+    assert get_internals(client)["subscriptions"] == subscriptions + 1
 
 
 @pytest.mark.parametrize("other", ["remove", "remove with a handler", "set_value"])
@@ -588,11 +588,11 @@ async def test_create_control_racing_another_task_leaves_a_consistent_state(
     """
     device = await client.create_device("dev")
     if other == "remove with a handler":
-        control_object(client, "dev/c").on_value(lambda control, value, previous: None)
+        get_control_object(client, "dev/c").on_value(lambda control, value, previous: None)
 
     async def other_task() -> None:
         if other == "set_value":
-            await control_object(client, "dev/c").set_value(7)
+            await get_control_object(client, "dev/c").set_value(7)
         else:
             await device.remove()
 
@@ -608,7 +608,7 @@ async def test_create_control_racing_another_task_leaves_a_consistent_state(
             "/devices/dev/controls/c": b"7",
         }
     await wait_retained(broker.port, "/devices/dev/#", expected)
-    assert control_object(client, "dev/c").value == (7 if other == "set_value" else None)
+    assert get_control_object(client, "dev/c").value == (7 if other == "set_value" else None)
     await restart_broker(broker, client)
     await wait_retained(broker.port, "/devices/dev/#", expected)
 
@@ -751,7 +751,7 @@ async def test_remove_driver_devices_right_after_reconnect_erases_own_devices_no
 
     removed = await wait_or_dump(client.remove_driver_devices(), timeout=10)
 
-    assert removed == names and not any(device_object(client, name).is_own for name in names)
+    assert removed == names and not any(get_device_object(client, name).is_own for name in names)
     await wait_retained(broker.port, "/devices/#", {})
 
 
@@ -786,8 +786,8 @@ async def test_remove_driver_devices_erases_a_device_that_a_cancelled_create_dev
     await cancel_and_wait(creating)
 
     assert await wait_or_dump(client.remove_driver_devices(), timeout=10) == ["dev"]
-    await wait_until(lambda: internals(client)["internal tasks"] == 0)
-    assert not device_object(client, "dev").is_own
+    await wait_until(lambda: get_internals(client)["internal tasks"] == 0)
+    assert not get_device_object(client, "dev").is_own
     await wait_retained(broker.port, "/devices/dev/#", {})
 
 
@@ -843,7 +843,7 @@ async def test_create_control_cancelled_at_any_point_is_whole_or_absent(
     for _ in range(steps):
         await asyncio.sleep(0)
     await cancel_and_wait(attempt)
-    control = control_object(client, "dev/c")
+    control = get_control_object(client, "dev/c")
     expected = {}
     if control.exists:
         expected = {"/devices/dev/controls/c/meta": FIRST_VALUE_META, "/devices/dev/controls/c": b"5"}
@@ -928,7 +928,7 @@ async def test_device_created_again_while_its_removal_goes_out_gets_commands(
     await user.raw.publish("/devices/dev/controls/relay/on", "1")
 
     await wait_until(lambda: commands == [True])
-    assert delayed and internals(client)["subscriptions"] == 1
+    assert delayed and get_internals(client)["subscriptions"] == 1
 
 
 @pytest.mark.parametrize("with_handler", [False, True], ids=["without a handler", "with a handler"])
@@ -1072,7 +1072,7 @@ async def test_own_change_returns_before_puback_while_the_window_has_room(
     """
     await (await driver.create_device("foreign")).create_control("level", ControlType.VALUE, value=0)
     remote = await client.get_control("foreign/level")
-    controls = await window_of_controls(client, monkeypatch)
+    controls = await create_window_of_controls(client, monkeypatch)
     device = controls[0].device
     release = asyncio.Event()
 
@@ -1163,7 +1163,7 @@ async def test_value_that_waited_in_the_queue_is_taken_at_once_and_a_later_error
     With the window full a value waits in the queue, the control takes it at once. An unexpected error when
     it goes to paho later does not reach the caller, it is only logged.
     """
-    controls = await window_of_controls(client, monkeypatch)
+    controls = await create_window_of_controls(client, monkeypatch)
     queued = controls[0]
     release = asyncio.Event()
     failures: list[str] = []
