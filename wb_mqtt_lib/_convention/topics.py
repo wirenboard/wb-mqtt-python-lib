@@ -11,7 +11,7 @@ Topics of the Wiren Board convention, how the library builds and parses them.
 
 import enum
 from dataclasses import dataclass
-from typing import Optional
+from typing import NamedTuple, Optional
 
 ALL_DEVICE_METAS = "/devices/+/meta"
 ALL_CONTROL_METAS = "/devices/+/controls/+/meta"
@@ -173,28 +173,38 @@ def command_filter(device: str) -> str:
 # Order of erasure
 # ------------------------------------------------------------
 
-# (stage, place inside the stage). Stage 0 is the values, commands and errors of the controls with their
-# legacy meta subtopics, stage 1 the control meta, the error of the device and its legacy subtopics,
-# stage 2 the device meta and /meta/driver, which name the driver.
+
+class ErasureOrder(NamedTuple):
+    """
+    Stage of an erasure and the place inside the stage, compared as a sort key. A stage starts after
+    the broker confirmed the one before.
+    """
+
+    stage: int
+    place: int
+
+
+# Stage 0 is the values, commands and errors of the controls with their legacy meta subtopics, stage 1
+# the control meta, the error of the device and its legacy subtopics, stage 2 the device meta and
+# /meta/driver, which name the driver.
 _ERASURE_ORDER = {
-    TopicKind.VALUE: (0, 0),
-    TopicKind.COMMAND: (0, 0),
-    TopicKind.ERROR: (0, 1),
-    TopicKind.META: (1, 0),
-    TopicKind.DEVICE_ERROR: (1, 1),
-    TopicKind.DEVICE_META: (2, 0),
+    TopicKind.VALUE: ErasureOrder(0, 0),
+    TopicKind.COMMAND: ErasureOrder(0, 0),
+    TopicKind.ERROR: ErasureOrder(0, 1),
+    TopicKind.META: ErasureOrder(1, 0),
+    TopicKind.DEVICE_ERROR: ErasureOrder(1, 1),
+    TopicKind.DEVICE_META: ErasureOrder(2, 0),
 }
 
 
-def erasure_order(topic: str) -> tuple[int, int]:
+def erasure_order(topic: str) -> ErasureOrder:
     """
     Stage of an erasure the topic belongs to and its place inside the stage, a sort key.
 
-    A stage starts after the broker confirmed the one before. By the driver name in the device meta, erased
-    last, the next run finds a cleanup that ended halfway. An empty /meta/error after the meta would bring
-    an empty card back in an open homeui session. A legacy subtopic goes before the meta it belongs to,
-    one of a control with the values, one of the device with the control meta, and /meta/driver goes
-    with the device meta.
+    By the driver name in the device meta, erased last, the next run finds a cleanup that ended halfway.
+    An empty /meta/error after the meta would bring an empty card back in an open homeui session. A legacy
+    subtopic goes before the meta it belongs to, one of a control with the values, one of the device with
+    the control meta, and /meta/driver goes with the device meta.
     """
     parsed = parse(topic)
     if parsed is not None:

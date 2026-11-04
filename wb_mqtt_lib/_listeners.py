@@ -6,8 +6,7 @@ and other listeners never wait for it.
 import asyncio
 import inspect
 import weakref
-from enum import Enum
-from typing import Any, Awaitable, Callable, Iterable, Optional, Union
+from typing import Any, Awaitable, Callable, Iterable, Optional, Protocol, Union
 
 from ._logs import get_logger, log_failure
 from ._tasks import is_cancelled_from_outside
@@ -202,6 +201,14 @@ class ListenerRegistry:
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
+class ListenerEvent(Protocol):  # pylint: disable=too-few-public-methods
+    """
+    Kind of an event, an enum member with the name of the method that registers its handlers.
+    """
+
+    handler_name: str
+
+
 class ListenerSet:
     """
     Listeners of one device, control or client by event. Registering the same handler twice adds nothing.
@@ -210,19 +217,21 @@ class ListenerSet:
     def __init__(self, registry: ListenerRegistry, owner: str) -> None:
         self._registry = registry
         self._owner = owner
-        self._listeners_by_event: dict[Enum, dict[Handler, Listener]] = {}
+        self._listeners_by_event: dict[ListenerEvent, dict[Handler, Listener]] = {}
 
     def __bool__(self) -> bool:
         return any(self._listeners_by_event.values())
 
-    def add_handler(self, event: Enum, handler: Handler, initial_calls: Iterable[tuple] = ()) -> Handler:
+    def add_handler(
+        self, event: ListenerEvent, handler: Handler, initial_calls: Iterable[tuple] = ()
+    ) -> Handler:
         """
         Register a handler and queue the calls that describe the current state.
         """
         listeners = self._listeners_by_event.setdefault(event, {})
         if handler in listeners:
             return handler
-        listener = self._registry.create_listener(handler, f"{event.value} of {self._owner}")
+        listener = self._registry.create_listener(handler, f"{event.handler_name} of {self._owner}")
         for args in initial_calls:
             listener.queue_event(args)
         listeners[handler] = listener
@@ -237,12 +246,12 @@ class ListenerSet:
             if listener is not None:
                 listener.stop()
 
-    def emit_event(self, event: Enum, args: tuple) -> None:
+    def emit_event(self, event: ListenerEvent, args: tuple) -> None:
         """
         Queue an event for every listener of that event.
         """
         for listener in self._listeners_by_event.get(event, {}).values():
             listener.queue_event(args)
 
-    def has_listeners(self, event: Enum) -> bool:
+    def has_listeners(self, event: ListenerEvent) -> bool:
         return bool(self._listeners_by_event.get(event))

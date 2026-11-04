@@ -305,7 +305,7 @@ class Device:  # pylint: disable=too-many-public-methods
         Meta of the device, its title and driver. While the device has no meta, it is empty.
         """
         record = self._record
-        return DeviceMeta(record.title, record.driver) if record else _EMPTY_DEVICE_META
+        return record.meta if record and record.meta else _EMPTY_DEVICE_META
 
     @property
     def error(self) -> ControlErrorFlags:

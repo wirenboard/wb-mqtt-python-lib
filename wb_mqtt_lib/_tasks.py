@@ -43,11 +43,11 @@ class TaskSet:
     def __contains__(self, task: object) -> bool:
         return task in self._tasks
 
-    def get_tasks_with_prefix(self, prefix: str) -> list[asyncio.Task]:
+    def get_tasks(self) -> list[asyncio.Task]:
         """
-        The running tasks whose name starts with prefix.
+        The running tasks.
         """
-        return [task for task in self._tasks if task.get_name().startswith(prefix)]
+        return list(self._tasks)
 
     def start_task(
         self, coroutine: Coroutine[Any, Any, Any], name: str, log_error: bool = True

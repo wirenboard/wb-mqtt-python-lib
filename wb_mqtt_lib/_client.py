@@ -38,10 +38,14 @@ _DRIVERS_IN_USE: set[str] = set()
 
 class _ClientEvent(enum.Enum):
     """
-    Event of the client for its handlers, CONNECTION goes to on_connection_change.
+    Event of the client for its handlers, with the number of arguments the handler takes and its name.
     """
 
-    CONNECTION = "connection"
+    CONNECTION = (1, "on_connection_change")
+
+    def __init__(self, arguments: int, handler_name: str) -> None:
+        self.arguments = arguments
+        self.handler_name = handler_name
 
 
 class Client:  # pylint: disable=too-many-instance-attributes
@@ -200,8 +204,9 @@ class Client:  # pylint: disable=too-many-instance-attributes
             ClientClosedError: the client is closed.
         """
         self._raise_if_closed()
-        check_handler_arguments(handler, 1, "on_connection_change")
-        return self._connection_listeners.add_handler(_ClientEvent.CONNECTION, handler)
+        event = _ClientEvent.CONNECTION
+        check_handler_arguments(handler, event.arguments, event.handler_name)
+        return self._connection_listeners.add_handler(event, handler)
 
     def remove_handler(self, handler: Handler) -> None:
         """

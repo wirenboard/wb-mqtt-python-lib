@@ -8,6 +8,7 @@ an await in between and only then waits for the broker, so a cancelled call neve
 
 import asyncio
 import dataclasses
+import enum
 from typing import Any, Callable, Iterable, Optional
 
 from .._errors import (
@@ -56,11 +57,21 @@ from .values import (
 
 logger = get_logger(__name__)
 
-# Name prefix of the tasks that finish create_device
-_CREATION_TASK_PREFIX = "create_"
+
+class _Delivery(enum.Enum):
+    """
+    How a message of a foreign device came.
+    """
+
+    # Live and published without retain
+    LIVE = "live"
+    # Retained, live or from a one-off read of the broker
+    RETAINED = "retained"
+    # Retained and maybe sent again by the broker on resubscription after reconnect
+    RESENT = "resent"
 
 
-class DeviceManager:  # pylint: disable=too-many-public-methods
+class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instance-attributes
     """
     Devices of one client: subscriptions, publication and the internal tasks around them.
 
@@ -84,18 +95,23 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         self._is_closed = is_closed
         # Subscription to the whole of a foreign device, kept until the client closes
         self._device_watches: dict[str, asyncio.Task] = {}
-        self._tasks = TaskSet(logger)
+        # Tasks that subscribe an own device to its commands and unsubscribe it once it is removed
+        self._command_subscriptions = TaskSet(logger)
+        # Tasks that finish create_device, remove_driver_devices waits for them
+        self._device_creations = TaskSet(logger)
 
     @property
     def task_count(self) -> int:
-        return len(self._tasks)
+        return len(self._command_subscriptions) + len(self._device_creations)
 
     async def close(self) -> None:
         """
         End the waits with ClientClosedError and stop subscriptions and erasures in progress.
         """
         self.state.fail_waits(ClientClosedError())
-        await self._tasks.cancel_all_tasks(self._device_watches.values())
+        # Every internal task ends, the watches of foreign devices and the creations along with the rest
+        other_tasks = [*self._device_watches.values(), *self._device_creations.get_tasks()]
+        await self._command_subscriptions.cancel_all_tasks(other_tasks)
 
     # ------------------------------------------------------------
     # Reading devices, own and foreign
@@ -181,19 +197,17 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             logger.debug("Device %s is left from a previous run, erasing %d topics", name, len(leftovers))
 
         # A cancelled caller stops waiting, the device still becomes own
-        created = self._tasks.start_task(
-            self._take_over_name(name, title, device_topics, leftovers),
-            f"{_CREATION_TASK_PREFIX}{name}",
-            log_error=False,
+        created = self._device_creations.start_task(
+            self._take_over_name(name, title, device_topics, leftovers), f"create {name}", log_error=False
         )
         await self._wait_for_broker(created)
 
     async def update_device_meta(self, name: str, title: TitleLike) -> None:
         device = self._require_own_device(name)
-        title = TranslatedTitle.parse(title)
-        if title == device.title:
+        # The driver of the client stays, the same title gives the same meta and nothing to publish
+        meta = DeviceMeta(TranslatedTitle.parse(title), self._driver)
+        if meta == device.meta:
             return
-        meta = DeviceMeta(title, self._driver)
         # Waits for PUBACK, then a reader of the name nearly always gets the echo before a remove() that
         # follows. An echo of the meta after it brings the name back as a foreign device.
         published = self._publisher.put_retained([(device.topics.meta, meta.to_json())])
@@ -227,7 +241,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         self.state.mark_device_removed(name)
         # The caller gets the error of the task, as with create_device
         await self._wait_for_broker(
-            self._tasks.start_task(
+            self._command_subscriptions.start_task(
                 self._unsubscribe_commands_after(name, erasure_done), f"remove {name}", log_error=False
             )
         )
@@ -394,7 +408,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
     async def remove_driver_devices(self) -> list[str]:
         self._raise_if_closed()
         # A create_device cancelled just before, as in a service that stops, still makes its device own
-        creations = self._tasks.get_tasks_with_prefix(_CREATION_TASK_PREFIX)
+        creations = self._device_creations.get_tasks()
         if creations:
             await asyncio.wait(creations)
 
@@ -475,12 +489,13 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
             return
         # The same value sent again on resubscription after reconnect is no event, as in wb-rules.
         # A live repeat is one.
-        resent = message.retain and self._subscriber.is_delivering_retained(
-            message.topic, self._on_device_message
-        )
-        _apply_foreign_message(
-            self.state, topic, message.payload.decode("utf-8", "replace"), message.retain, resent
-        )
+        if not message.retain:
+            delivery = _Delivery.LIVE
+        elif self._subscriber.is_delivering_retained(message.topic, self._on_device_message):
+            delivery = _Delivery.RESENT
+        else:
+            delivery = _Delivery.RETAINED
+        _apply_foreign_message(self.state, topic, _decode(message.payload), delivery)
 
     def _on_command(self, message: Message) -> None:
         # Commands to own devices only
@@ -502,7 +517,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
 
         # Skipped without a control, a payload or a handler, or for a readonly control
         control = self.state.get_control(topic.device, topic.control)
-        payload = message.payload.decode("utf-8", "replace")
+        payload = _decode(message.payload)
         if control is None or not control.exists:
             logger.debug("Command to %s/%s skipped, the control does not exist", topic.device, topic.control)
             return
@@ -576,11 +591,13 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         _check_not_created(name, device)
         meta = DeviceMeta(title, self._driver)
         published = self._publisher.put_retained([(device_topics.meta, meta.to_json())])
-        self.state.make_device_own(name, title, self._driver)
+        self.state.make_device_own(name, meta)
         device.topics = device_topics
 
         # The commands get subscribed, waits for the device end
-        subscribed = self._tasks.start_task(self._subscribe_commands(name), f"subscribe commands of {name}")
+        subscribed = self._command_subscriptions.start_task(
+            self._subscribe_commands(name), f"subscribe commands of {name}"
+        )
         await asyncio.gather(published, subscribed)
 
     def _require_own_device(self, name: str) -> DeviceRecord:
@@ -653,10 +670,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods
         """
         Erase retained topics in the stages of topics.erasure_order, keeping the given order inside a stage.
         """
-        staged = sorted(
-            ((topic, topics.erasure_order(topic)[0]) for topic in to_erase), key=lambda item: item[1]
-        )
-        return self._publisher.put_erasure(staged)
+        # sorted is stable, so the given order stays inside a stage
+        ordered = sorted(to_erase, key=lambda topic: topics.erasure_order(topic).stage)
+        return self._publisher.put_erasure([(topic, topics.erasure_order(topic).stage) for topic in ordered])
 
     def _erase_leftovers(self, leftovers: dict[str, bytes]) -> asyncio.Future:
         return self._erase(sorted(leftovers, key=topics.erasure_order))
@@ -735,11 +751,11 @@ def _get_device_driver(name: str, retained: dict[str, bytes]) -> Optional[str]:
     the legacy /meta/driver when the JSON meta names none.
     """
     meta = retained.get(topics.device_meta(name))
-    parsed = parse_device_meta(meta.decode("utf-8", "replace")) if meta else None
+    parsed = parse_device_meta(_decode(meta)) if meta else None
     if parsed is not None and parsed.driver:
         return parsed.driver
     legacy = retained.get(topics.legacy_driver(name))
-    return legacy.decode("utf-8", "replace") if legacy else None
+    return _decode(legacy) if legacy else None
 
 
 def _get_device_signature(name: str, retained: dict[str, bytes]) -> tuple[bool, Optional[str]]:
@@ -760,12 +776,18 @@ def _get_driver_device_names(driver: str, signatures: dict[str, bytes]) -> set[s
     return {name for name in names if _get_device_driver(name, signatures) == driver}
 
 
+def _decode(payload: bytes) -> str:
+    """
+    Payload of a message as text. A live reader and a one-off read decode it the same way.
+    """
+    return payload.decode("utf-8", "replace")
+
+
 def _apply_foreign_message(
-    state: State, topic: topics.ParsedTopic, payload: str, retain: bool, resent: bool = False
+    state: State, topic: topics.ParsedTopic, payload: str, delivery: _Delivery
 ) -> None:
     """
-    Apply a message of a foreign device to the state. retain is the flag the message was published with,
-    resent marks a retained message that may be one the broker sends again on resubscription.
+    Apply a message of a foreign device to the state.
     """
     # Meta of the device, an empty one clears it
     if topic.kind is topics.TopicKind.DEVICE_META:
@@ -784,7 +806,7 @@ def _apply_foreign_message(
 
     # Value, meta and error of a control
     if topic.kind is topics.TopicKind.VALUE:
-        _apply_value(state, topic.device, topic.control, payload, retain, resent)
+        _apply_value(state, topic.device, topic.control, payload, delivery)
     elif topic.kind is topics.TopicKind.META:
         _apply_control_meta(state, topic.device, topic.control, payload)
     elif topic.kind is topics.TopicKind.ERROR:
@@ -831,8 +853,8 @@ def _apply_control_error(state: State, device_name: str, control_name: str, payl
         state.drop_control_if_unused(device_name, control_name)
 
 
-def _apply_value(  # pylint: disable=too-many-arguments,too-many-positional-arguments
-    state: State, device_name: str, control_name: str, payload: str, retain: bool, resent: bool
+def _apply_value(
+    state: State, device_name: str, control_name: str, payload: str, delivery: _Delivery
 ) -> None:
     # A value may come before the meta, the record of the control keeps it until then
     control = state.get_control(device_name, control_name)
@@ -843,7 +865,7 @@ def _apply_value(  # pylint: disable=too-many-arguments,too-many-positional-argu
 
     # A press is an event. A retained message here is a leftover, not a press.
     if control.meta is not None and control.meta.control_type == ControlType.PUSHBUTTON:
-        if payload and not retain:
+        if payload and delivery is _Delivery.LIVE:
             state.emit_pushbutton_press(device_name, control_name)
         return
 
@@ -855,7 +877,9 @@ def _apply_value(  # pylint: disable=too-many-arguments,too-many-positional-argu
         # A payload repeated, after reconnect for example, is in the log already
         if control.payload != previous_payload:
             warn_if_converted_to_bool(value, payload, f"{device_name}/{control_name}")
-        state.set_control_value(device_name, control_name, value, notify_unchanged=not resent)
+        state.set_control_value(
+            device_name, control_name, value, notify_unchanged=delivery is not _Delivery.RESENT
+        )
     elif not payload:
         state.drop_control_if_unused(device_name, control_name)
 
@@ -869,7 +893,7 @@ def _build_state(retained: dict[str, bytes]) -> State:
     for topic, payload in retained.items():
         parsed = topics.parse(topic)
         if parsed is not None and parsed.kind is not topics.TopicKind.COMMAND:
-            _apply_foreign_message(state, parsed, payload.decode("utf-8", "replace"), retain=True)
+            _apply_foreign_message(state, parsed, _decode(payload), _Delivery.RETAINED)
     return state
 
 
@@ -886,4 +910,4 @@ def _build_snapshot(name: str, retained: dict[str, bytes]) -> Optional[DeviceSna
         for control_name, control in device.controls.items()
         if control.exists
     }
-    return DeviceSnapshot(name, DeviceMeta(device.title, device.driver), controls, device.error)
+    return DeviceSnapshot(name, device.meta or DeviceMeta(), controls, device.error)
