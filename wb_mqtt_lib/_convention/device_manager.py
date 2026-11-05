@@ -341,10 +341,12 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
             return
 
         # Own control of another type, every call goes out and reaches on_value. None erases the value.
-        payload = None if value is None else to_payload(control.meta, value)
-        # A value is a successful read. As the convention says, r goes away first, then the value goes out.
-        error = control.error
+        payload, kept_value, error = None, None, control.error
         if value is not None:
+            payload = to_payload(control.meta, value)
+            # The value is what the payload reads as, as a reader of the topic gets it
+            kept_value = parse_value(control.meta, payload)
+            # A value is a successful read. As the convention says, r goes away first, then the value goes out.
             error &= ~ControlErrorFlags.READ
         messages: list[tuple[str, Optional[str]]] = []
         if error != control.error:
@@ -354,8 +356,6 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
 
         control.payload = payload
         self.state.set_control_error(device_name, control_name, error)
-        # The value is what the payload reads as, as a reader of the topic gets it
-        kept_value = None if payload is None else parse_value(control.meta, payload)
         self.state.set_control_value(device_name, control_name, kept_value, notify_unchanged=True)
         await self._wait_for_broker(published)
 
@@ -670,9 +670,10 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
         """
         Erase retained topics in the stages of topics.erasure_order, keeping the given order inside a stage.
         """
-        # sorted is stable, so the given order stays inside a stage
-        ordered = sorted(to_erase, key=lambda topic: topics.erasure_order(topic).stage)
-        return self._publisher.put_erasure([(topic, topics.erasure_order(topic).stage) for topic in ordered])
+        staged = [(topic, topics.erasure_order(topic).stage) for topic in to_erase]
+        # sort is stable, so the given order stays inside a stage
+        staged.sort(key=lambda topic_and_stage: topic_and_stage[1])
+        return self._publisher.put_erasure(staged)
 
     def _erase_leftovers(self, leftovers: dict[str, bytes]) -> asyncio.Future:
         return self._erase(sorted(leftovers, key=topics.erasure_order))

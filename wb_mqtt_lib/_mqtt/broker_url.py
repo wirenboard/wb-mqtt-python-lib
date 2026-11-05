@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 from urllib.parse import unquote, urlparse
 
-from .checks import is_refused_by_broker
+from .checks import is_refused_by_broker, is_utf8_text
 
 DEFAULT_BROKER_URL = "unix:///var/run/mosquitto/mosquitto.sock"
 
@@ -51,7 +51,8 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
 
     Raises:
         ValueError: no client could connect to this URL, for example ? or # that would cut the URL, unix://
-            with a host or a login with a character the broker refuses. The text does not quote the URL.
+            with a host, a login with a character the broker refuses, a password that is not valid UTF-8
+            or / in the login that is not percent-encoded. The text does not quote the URL.
     """
     # The URL parses and has a known scheme
     if not isinstance(broker_url, str) or "://" not in broker_url:
@@ -75,6 +76,8 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
     password = unquote(parsed.password) if parsed.password else None
     if username is not None and any(is_refused_by_broker(char) for char in username):
         raise ValueError(f"{_INVALID_URL}, the login has a character the broker refuses")
+    if password is not None and not is_utf8_text(password):
+        raise ValueError(f"{_INVALID_URL}, the password is not valid UTF-8")
 
     # A unix socket path, or a host with a port
     if parsed.scheme == "unix":
@@ -83,6 +86,9 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
         if hostname:
             raise ValueError(f"{_INVALID_URL}, a unix socket path goes after three slashes")
         return BrokerAddress(transport, parsed.path, username=username, password=password)
+    if "@" in parsed.path:
+        # A / in the login that is not percent-encoded moves the rest of the login and the host into the path
+        raise ValueError(f"{_INVALID_URL}, / in the login or the password goes percent-encoded")
     if hostname is None:
         raise ValueError(f"{_INVALID_URL}, no host")
     if port is None:

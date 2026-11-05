@@ -150,6 +150,8 @@ class RawTopics:
             BrokerDisconnectedError: an event while the broker link is down, or the link is lost
                 or the broker does not confirm it in 5 s.
             ClientClosedError: the client is closed or closes while waiting.
+            Exception: an unexpected error of paho or aiomqtt while the call hands the message to paho,
+                as it is. A retained message is taken back.
         """
         self._raise_if_closed()
         await self._publisher.publish(topic, payload, qos=qos, retain=retain)

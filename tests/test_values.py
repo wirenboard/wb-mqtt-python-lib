@@ -177,9 +177,8 @@ async def test_invalid_declaration_publishes_nothing(broker: MosquittoBroker, cl
     """
     A wrong type, a deprecated type, a wrong initial value or any initial value of a pushbutton, a meta field
     the meta cannot carry and a name too long for the topics of the device or the control fail before
-    the first
-    publication. A lone surrogate has no UTF-8 form, a NaN order would make the meta invalid JSON.
-    Of two wrong fields precision is reported first.
+    the first publication. A lone surrogate has no UTF-8 form, a NaN order would make the meta invalid
+    JSON. Of two wrong fields precision is reported first.
 
     The name stays free for a valid declaration, and its order is not taken.
     """

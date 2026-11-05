@@ -215,6 +215,9 @@ async def test_login_rejected_after_a_reconnect_is_retried(login_broker: Mosquit
         ("tcp://:1883", []),
         ("tcp://127.0.0.1", []),
         ("tcp://svc:ab/cd@host:1883", ["ab/cd", "svc"]),
+        ("tcp://svc:2024/Spring@host:1883", ["2024", "Spring", "svc"]),
+        ("ws://svc:2024/Spring@host:18883", ["2024", "Spring", "svc"]),
+        ("tcp://svc:qwe\udcffzxc@host:1883", ["qwe", "zxc", "svc"]),
         ("admin:s3cret@localhost:1883", ["admin", "s3cret"]),
         ("ws://svc:Zm9v/YmFy+==@host:18883", ["Zm9v", "YmFy", "svc"]),
         ("tcp://svc%0Aname:pw@host:1883", ["svc", "name", "pw"]),
@@ -229,7 +232,8 @@ def test_invalid_broker_url_raises_without_quoting_it(url: str, secrets: list[st
 
     A unix socket path with two slashes, ? or # would silently point to another socket, and ? or # would
     silently cut a tcp or ws URL. On a login with a control character or a non-character mosquitto drops
-    the connection, and the client would retry forever.
+    the connection, and the client would retry forever, as on a password paho cannot encode. A / in
+    the password before digits would make them the port of the login as the host.
     """
     with pytest.raises(ValueError) as error:
         Client("test-service", url)

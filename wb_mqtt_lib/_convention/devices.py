@@ -158,7 +158,9 @@ class Control:  # pylint: disable=too-many-public-methods
         A readonly control takes no commands, they come again once readonly is off.
 
         Raises:
+            TypeError: the handler does not take two arguments.
             NotOwnError: the control is foreign.
+            ClientClosedError: the client is closed.
         """
         return self._listen(ControlEvent.COMMAND, handler)
 
@@ -241,9 +243,9 @@ class Control:  # pylint: disable=too-many-public-methods
         """
         Only for an own control. Change meta fields on the fly, for example title, units or readonly.
 
-        A field set back to None leaves the meta.
-        readonly and hidden take only True or False. With a link it returns once the broker confirmed
-        the meta, or after 5 s without confirmation, then the meta goes again.
+        A field set back to None leaves the meta. readonly and hidden take only True or False. With a link
+        it returns once the broker confirmed the meta, or after 5 s without confirmation, then the meta
+        goes again.
 
         Raises:
             TypeError: an unknown field, or a field of the wrong type as in Device.create_control.
@@ -426,7 +428,9 @@ class Device:  # pylint: disable=too-many-public-methods
         not take it off, device.remove_handler does. Commands to readonly controls are dropped.
 
         Raises:
+            TypeError: the handler does not take two arguments.
             NotOwnError: the device is foreign.
+            ClientClosedError: the client is closed.
         """
         return self._listen(DeviceEvent.CONTROL_COMMAND, handler)
 

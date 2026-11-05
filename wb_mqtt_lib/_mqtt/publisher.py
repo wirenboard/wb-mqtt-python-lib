@@ -320,9 +320,9 @@ class Publisher:
         wait_for_puback: bool,
     ) -> asyncio.Future:
         """
-        Put messages into the mirror, when they are retained, and into the queue
-        in the order given, with a barrier where the stage changes. The queue hands them to paho while
-        the window has room. An error of paho on a message takes the whole call back and comes as it is.
+        Put messages into the mirror, when they are retained, and into the queue in the order given, with
+        a barrier where the stage changes. The queue hands them to paho while the window has room. An error
+        of paho on a message takes the whole call back and comes as it is.
         """
         session = self._session
         if session is None and not retain:

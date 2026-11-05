@@ -437,8 +437,7 @@ class State:  # pylint: disable=too-many-public-methods
         self._emit_control_event(device_name, control_name, ControlEvent.REMOVED)
 
         # The record stays only for listeners and waits, the device may go with the control
-        if control.is_unused:
-            del device.controls[control_name]
+        self.drop_control_if_unused(device_name, control_name)
         self._announce_device_change(device_name, state_before)
 
     def drop_control_if_unused(self, device_name: str, control_name: str) -> None:
@@ -547,7 +546,6 @@ class State:  # pylint: disable=too-many-public-methods
             self.mark_control_removed(device_name, control_name)
         for control_name, control in list(device.controls.items()):
             control.payload = None
-            control.value = None
             control.error = ControlErrorFlags.NONE
             self.drop_control_if_unused(device_name, control_name)
         self.set_device_error(device_name, ControlErrorFlags.NONE)

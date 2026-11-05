@@ -52,7 +52,7 @@ class _Subscription:
     retained: dict[str, bytes] = field(default_factory=dict)
     # Packet number of the SUBSCRIBE whose retained messages are still arriving,
     # None once a later marker came
-    pending_retained: Optional[int] = None
+    retained_packet_number: Optional[int] = None
 
 
 class Subscriber:  # pylint: disable=too-many-instance-attributes
@@ -139,7 +139,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         self._connected = False
         for subscription in self._subscriptions.values():
             subscription.retained.clear()
-            subscription.pending_retained = None
+            subscription.retained_packet_number = None
         self._pending_retained.clear()
         self._fail_marker_waits(BrokerDisconnectedError("the broker link is lost"))
 
@@ -207,7 +207,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
                     elif callback not in subscription.callbacks:
                         self._add_callback(subscription, callback)
                         added_filters.append(topic_filter)
-                    retained_arriving = retained_arriving or subscription.pending_retained is not None
+                    retained_arriving = retained_arriving or subscription.retained_packet_number is not None
 
             # close() may have begun while the call waited for the lock or a SUBACK
             self._raise_if_unavailable()
@@ -366,7 +366,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         so a retained message on the topic may be one the broker kept and not a live one.
         """
         return bool(self._pending_retained) and any(
-            subscription.pending_retained is not None and callback in subscription.callbacks
+            subscription.retained_packet_number is not None and callback in subscription.callbacks
             for subscription in self._topic_matcher.iter_match(topic)
         )
 
@@ -402,7 +402,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
         if self._subscription_counts[callback] < 2:
             return True
         candidates = self._get_callback_subscriptions(callback, topic, matching)
-        source = min(candidates, key=lambda item: (item.pending_retained is not None, item.number))
+        source = min(candidates, key=lambda item: (item.retained_packet_number is not None, item.number))
         return source is subscription
 
     def _get_callback_subscriptions(
@@ -421,9 +421,9 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
 
         # The retained messages of every SUBSCRIBE sent before the marker have arrived
         for subscription in [
-            item for item in self._pending_retained if item.pending_retained < marker_number
+            item for item in self._pending_retained if item.retained_packet_number < marker_number
         ]:
-            subscription.pending_retained = None
+            subscription.retained_packet_number = None
             self._pending_retained.discard(subscription)
 
         # So have those of the waits that published this marker or an earlier one
@@ -481,7 +481,7 @@ class Subscriber:  # pylint: disable=too-many-instance-attributes
             LinkLost: the connection is broken.
         """
         # Nothing awaits between the number and the packet, so the numbers follow the packets
-        subscription.pending_retained = next(self._packet_numbers)
+        subscription.retained_packet_number = next(self._packet_numbers)
         self._pending_retained.add(subscription)
         try:
             await self._connection.subscribe(topic_filter, subscription.qos, subscription.number)
