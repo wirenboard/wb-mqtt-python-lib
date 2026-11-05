@@ -1,0 +1,1437 @@
+"""
+Own devices: what the service publishes, commands from /on, removal and cleanup by the driver name.
+"""
+
+import asyncio
+import json
+from typing import Any
+
+import pytest
+
+from tests.broker import (
+    FIRST_VALUE_META,
+    INVALID_NAMES,
+    DeadLinkProxy,
+    MosquittoBroker,
+    Send,
+    break_publish,
+    cancel_and_wait,
+    create_window_of_controls,
+    get_control_object,
+    get_device_object,
+    get_erased_topics,
+    get_internals,
+    intercept_publish,
+    publish_retained,
+    read_retained,
+    restart_broker,
+    wait_or_dump,
+    wait_retained,
+    wait_until,
+    watch_messages,
+)
+from tests.conftest import ConnectClient
+from wb_mqtt_lib import (
+    AlreadyCreatedError,
+    BrokerDisconnectedError,
+    Client,
+    Control,
+    ControlErrorFlags,
+    ControlMeta,
+    ControlType,
+    DeviceMeta,
+    DeviceTakenError,
+    InvalidNameError,
+    Message,
+    MqttLibError,
+    NotOwnError,
+    TranslatedTitle,
+)
+from wb_mqtt_lib._mqtt import broker_connection
+from wb_mqtt_lib._mqtt import subscriber as subscriber_module
+
+# What remove() erases under a device with raw subtopics, in this order, and what stays in the broker
+RAW_SUBTOPIC_ERASURES = {
+    "device": (
+        [
+            "/devices/dev/controls/temp",
+            "/devices/dev/controls/temp/meta/error",
+            "/devices/dev/controls/temp/meta/type",
+            "/devices/dev/controls/temp/meta",
+            "/devices/dev/meta/name",
+            "/devices/dev/meta",
+            "/devices/dev/meta/driver",
+        ],
+        {},
+    ),
+    "control": (
+        [
+            "/devices/dev/controls/temp",
+            "/devices/dev/controls/temp/meta/error",
+            "/devices/dev/controls/temp/meta/type",
+            "/devices/dev/controls/temp/meta",
+        ],
+        {
+            "/devices/dev/meta": b'{"driver": "test-service"}',
+            "/devices/dev/meta/name": b"Dev",
+            "/devices/dev/meta/driver": b"test-service",
+        },
+    ),
+}
+
+
+async def test_device_meta_and_control_order_follow_convention(
+    broker: MosquittoBroker, client: Client
+) -> None:
+    """
+    The device meta carries the driver and both title languages. Order goes by creation and on from
+    an explicit one.
+    """
+    device = await client.create_device("test_dev", title={"en": "Test", "ru": "Тест"})
+    await device.create_control("temp", ControlType.VALUE)
+    await device.create_control("relay", ControlType.SWITCH)
+    await device.create_control("level", ControlType.RANGE, order=10)
+    await device.create_control("next", ControlType.VALUE)
+
+    retained = await read_retained(broker.port, "/devices/test_dev/#")
+
+    assert json.loads(retained["/devices/test_dev/meta"]) == {
+        "driver": "test-service",
+        "title": {"en": "Test", "ru": "Тест"},
+    }
+    orders = {
+        name: json.loads(retained[f"/devices/test_dev/controls/{name}/meta"])["order"]
+        for name in ("temp", "relay", "level", "next")
+    }
+    assert orders == {"temp": 1, "relay": 2, "level": 10, "next": 11}
+
+
+@pytest.mark.parametrize(
+    "declaration, meta",
+    [
+        (
+            {"control_type": ControlType.VALUE, "title": "Temperature", "units": "deg C", "precision": 0.1},
+            {"type": "value", "title": {"en": "Temperature"}, "units": "deg C", "precision": 0.1},
+        ),
+        (
+            {
+                "control_type": ControlType.VALUE,
+                "hidden": True,
+                "enum": {"0": {"en": "Off", "ru": "Выкл"}, "1": "On"},
+            },
+            {"type": "value", "hidden": True, "enum": {"0": {"en": "Off", "ru": "Выкл"}, "1": {"en": "On"}}},
+        ),
+        (
+            {"control_type": ControlType.RANGE, "minimum": 0, "maximum": 1000, "readonly": True},
+            {"type": "range", "readonly": True, "min": 0, "max": 1000},
+        ),
+        (
+            {"control_type": ControlType.VALUE, "title": TranslatedTitle("Level", "Уровень")},
+            {"type": "value", "title": {"en": "Level", "ru": "Уровень"}},
+        ),
+    ],
+    ids=["title, units and precision", "hidden and enum", "range limits and readonly", "title object"],
+)
+async def test_control_meta_goes_out_by_convention_and_comes_back(
+    broker: MosquittoBroker, driver: Client, client: Client, declaration: dict, meta: dict
+) -> None:
+    """
+    The declaration becomes the JSON meta of the convention, a reader gets the same meta back.
+    """
+    own = await (await driver.create_device("dev")).create_control("ctl", **declaration)
+
+    retained = await read_retained(broker.port, "/devices/dev/controls/ctl/meta")
+    remote = await client.get_control("dev/ctl")
+
+    assert json.loads(retained["/devices/dev/controls/ctl/meta"]) == {
+        "readonly": False,
+        "hidden": False,
+        "order": 1,
+        **meta,
+    }
+    assert remote.meta == own.meta
+
+
+async def test_create_control_takes_positional_arguments_in_the_order_of_readme(client: Client) -> None:
+    """
+    A service may pass the arguments of create_control by position, in the order README lists them.
+    """
+    device = await client.create_device("dev")
+
+    level = await device.create_control(
+        "level",
+        ControlType.VALUE,
+        "Level",
+        5,
+        ControlErrorFlags.READ,
+        10,
+        0,
+        0.5,
+        True,
+        "V",
+        7,
+        True,
+        {"5": "Five"},
+    )
+
+    assert (level.value, level.error) == (5, ControlErrorFlags.READ)
+    assert level.meta == ControlMeta(
+        control_type=ControlType.VALUE,
+        title=TranslatedTitle("Level"),
+        units="V",
+        precision=0.5,
+        minimum=0,
+        maximum=10,
+        order=7,
+        readonly=True,
+        hidden=True,
+        enum={"5": TranslatedTitle("Five")},
+    )
+
+
+async def test_error_of_create_control_goes_out_between_the_meta_and_the_value(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    The control has the error at once, on_error gets it with previous NONE, a reader gets it before
+    the value.
+    """
+    device = await client.create_device("dev")
+    errors: list = []
+    device.on_control_error(lambda control, error, previous: errors.append((control.name, error, previous)))
+    messages = await watch_messages(connect, "/devices/dev/controls/temp/#")
+
+    temp = await device.create_control("temp", ControlType.VALUE, value=21, error=ControlErrorFlags.READ)
+
+    assert temp.error == ControlErrorFlags.READ
+    await wait_until(lambda: len(messages) == 3 and len(errors) == 1)
+    assert [message.topic for message in messages] == [
+        "/devices/dev/controls/temp/meta",
+        "/devices/dev/controls/temp/meta/error",
+        "/devices/dev/controls/temp",
+    ]
+    assert errors == [("temp", ControlErrorFlags.READ, ControlErrorFlags.NONE)]
+    remote = await (await connect("reader")).get_control("dev/temp")
+    assert remote.error == ControlErrorFlags.READ and remote.value == 21
+
+
+async def test_value_clears_the_read_error_before_it_goes_out(connect: ConnectClient, client: Client) -> None:
+    """
+    None erases the value and keeps the error, READ too. set_value clears READ and keeps WRITE, the error
+    without r goes out before the value. A value without READ set touches no error.
+    """
+    device = await client.create_device("dev")
+    temp = await device.create_control(
+        "temp", ControlType.VALUE, value=21, error=ControlErrorFlags.READ | ControlErrorFlags.WRITE
+    )
+    events: list = []
+    temp.on_error(lambda control, error, previous: events.append(("error", error, previous)))
+    temp.on_value(lambda control, value, previous: events.append(("value", value, previous)))
+    messages = await watch_messages(connect, "/devices/dev/controls/temp/#")
+    await wait_until(lambda: len(messages) == 3 and len(events) == 2)
+    messages.clear()
+    events.clear()
+
+    await temp.set_value(None)
+    assert temp.error == ControlErrorFlags.READ | ControlErrorFlags.WRITE
+    await temp.set_value(22)
+    await temp.set_value(23)
+
+    assert temp.error == ControlErrorFlags.WRITE
+    await wait_until(lambda: len(messages) == 4 and len(events) == 4)
+    assert [(message.topic.rsplit("/", 1)[1], message.payload) for message in messages] == [
+        ("temp", b""),
+        ("error", b"w"),
+        ("temp", b"22"),
+        ("temp", b"23"),
+    ]
+    assert sorted(events, key=str) == [
+        ("error", ControlErrorFlags.WRITE, ControlErrorFlags.READ | ControlErrorFlags.WRITE),
+        ("value", 22, None),
+        ("value", 23, 22),
+        ("value", None, 21),
+    ]
+
+
+async def test_update_meta_changes_fields_on_the_fly(
+    broker: MosquittoBroker, driver: Client, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    Title, readonly and hidden change without recreating the control, the value stays, readers see on_meta.
+
+    hidden is always in the meta, so hidden=False replaces True in an open web interface. A field the meta
+    cannot carry is refused before anything changes, the type too, it stays as created. The same fields
+    once more publish nothing. A field given None leaves the meta.
+    """
+    device = await driver.create_device("test_dev", title="Old")
+    temp = await device.create_control("temp", ControlType.VALUE, title="Temp", hidden=True, value=1)
+    remote = await client.get_control("test_dev/temp")
+    remote_device = await client.get_device("test_dev")
+    metas = []
+    remote.on_meta(
+        lambda control: metas.append((control.meta.title, control.meta.readonly, control.meta.hidden))
+    )
+
+    await temp.update_meta(title={"en": "Temperature", "ru": "Температура"}, readonly=True, hidden=False)
+    await device.update_meta(title="New")
+
+    await wait_until(lambda: len(metas) == 1 and remote_device.meta.title.en == "New")
+    assert metas == [(TranslatedTitle("Temperature", "Температура"), True, False)]
+    retained = await read_retained(broker.port, "/devices/test_dev/#")
+    assert json.loads(retained["/devices/test_dev/controls/temp/meta"]) == {
+        "type": "value",
+        "readonly": True,
+        "hidden": False,
+        "title": {"en": "Temperature", "ru": "Температура"},
+        "order": 1,
+    }
+    assert json.loads(retained["/devices/test_dev/meta"]) == {
+        "driver": "driver",
+        "title": {"en": "New"},
+    }
+    assert retained["/devices/test_dev/controls/temp"] == b"1"
+    meta = temp.meta
+    for fields, error in [
+        ({"colour": "red"}, TypeError),
+        ({"control_type": ControlType.SWITCH}, TypeError),
+        ({"precision": "0.1"}, TypeError),
+        ({"precision": 0}, ValueError),
+        ({"maximum": float("inf")}, ValueError),
+        ({"order": float("nan")}, TypeError),
+        ({"readonly": None}, TypeError),
+        ({"title": {"en": "\ud800"}}, TypeError),
+    ]:
+        with pytest.raises(error):
+            await temp.update_meta(**fields)
+    assert temp.meta == meta
+    sent: list[str] = []
+
+    async def record(send: Send, topic: str, _payload: Any) -> None:
+        if topic.startswith("/devices/"):
+            sent.append(topic)
+        await send()
+
+    intercept_publish(monkeypatch, record)
+    await temp.update_meta(title={"en": "Temperature", "ru": "Температура"}, readonly=True, hidden=False)
+    await device.update_meta(title="New")
+    assert not sent
+
+    await temp.update_meta(title=None)
+    retained = await read_retained(broker.port, "/devices/test_dev/controls/temp/meta")
+    assert "title" not in json.loads(retained["/devices/test_dev/controls/temp/meta"])
+
+
+@pytest.mark.parametrize("sent", ["before the device", "while the device listens"])
+async def test_retained_command_is_erased_and_live_command_reaches_handler(
+    broker: MosquittoBroker, connect: ConnectClient, client: Client, sent: str
+) -> None:
+    """
+    A retained command in /on is not executed, one left from the past and one published while the client
+    listens. An empty live one does not reach the handler.
+
+    A live one goes to on_command with a typed value.
+    """
+    other = await connect("other")
+    if sent == "before the device":
+        await other.raw.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
+    device = await client.create_device("test_dev")
+    relay = await device.create_control("relay", ControlType.SWITCH, value=False)
+    commands = []
+    relay.on_command(lambda control, value: commands.append(value))
+    if sent == "while the device listens":
+        await other.raw.publish("/devices/test_dev/controls/relay/on", "1", retain=True)
+
+    await wait_retained(broker.port, "/devices/test_dev/controls/relay/on", {})
+    assert not commands
+
+    await other.raw.publish("/devices/test_dev/controls/relay/on", "")
+    await other.raw.publish("/devices/test_dev/controls/relay/on", "1")
+    await wait_until(lambda: commands == [True])
+
+
+async def test_command_to_an_own_pushbutton_comes_as_true(connect: ConnectClient, client: Client) -> None:
+    """
+    A command to an own pushbutton reaches on_command and on_control_command as True.
+    """
+    device = await client.create_device("dev")
+    button = await device.create_control("button", ControlType.PUSHBUTTON)
+    commands: list[tuple[str, Any]] = []
+    button.on_command(lambda _control, value: commands.append(("control", value)))
+    device.on_control_command(lambda _control, value: commands.append(("device", value)))
+    user = await connect("user")
+
+    await user.raw.publish("/devices/dev/controls/button/on", "1")
+
+    await wait_until(lambda: len(commands) == 2)
+    assert sorted(commands) == [("control", True), ("device", True)]
+
+
+# A command to a control of the type and the value on_command gets, None for one that is dropped
+TYPED_COMMANDS = [
+    (ControlType.SWITCH, "1", True),
+    (ControlType.SWITCH, "0", False),
+    (ControlType.SWITCH, "2", True),
+    (ControlType.SWITCH, "0.0", False),
+    (ControlType.SWITCH, "on", None),
+    (ControlType.SWITCH, "nan", None),
+    (ControlType.VALUE, "21", 21),
+    (ControlType.VALUE, "21.5", 21.5),
+    (ControlType.VALUE, "abc", None),
+    (ControlType.VALUE, "nan", None),
+    (ControlType.RANGE, "inf", None),
+    (ControlType.RGB, "255;0;10", (255, 0, 10)),
+    (ControlType.RGB, "256;0;0", None),
+    (ControlType.RGB, "1;2", None),
+    (ControlType.LOCAL_TIME, "1700000000", 1700000000),
+    (ControlType.LOCAL_TIME, "1.5", None),
+    (ControlType.W1_ID, "7", 7),
+    (ControlType.TEXT, "abc", "abc"),
+]
+
+
+async def test_command_comes_by_the_control_type_and_one_that_does_not_fit_is_dropped(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    on_control_command gets a command as the value of the control type. A command that does not fit
+    the type, NaN and infinity among them, reaches no handler.
+    """
+    device = await client.create_device("dev")
+    for index, (control_type, _, _) in enumerate(TYPED_COMMANDS):
+        await device.create_control(f"c{index}", control_type)
+    await device.create_control("last", ControlType.TEXT)
+    commands: list[tuple[str, Any]] = []
+    device.on_control_command(lambda control, value: commands.append((control.name, value)))
+    user = await connect("user")
+
+    for index, (_, payload, _) in enumerate(TYPED_COMMANDS):
+        await user.raw.publish(f"/devices/dev/controls/c{index}/on", payload)
+    await user.raw.publish("/devices/dev/controls/last/on", "done")
+
+    await wait_until(lambda: commands[-1:] == [("last", "done")])
+    expected = [
+        (f"c{index}", value) for index, (_, _, value) in enumerate(TYPED_COMMANDS) if value is not None
+    ]
+    assert commands == [*expected, ("last", "done")]
+
+
+@pytest.mark.parametrize("offline", [False, True], ids=["online", "offline"])
+async def test_remove_erases_controls_first_and_device_meta_last(
+    broker: MosquittoBroker, connect: ConnectClient, dead_link: tuple[DeadLinkProxy, Client], offline: bool
+) -> None:
+    """
+    remove() erases in three stages, each after the broker confirmed the one before: values and errors
+    of the controls in reverse order of creation, then their meta, then the device meta. A half done
+    removal leaves the meta with the driver name, so cleanup finds it later. Without a link the erasures
+    go out after reconnect in the same order.
+    """
+    proxy, client = dead_link
+    device = await client.create_device("dev")
+    first = await device.create_control("a", ControlType.VALUE, value=1)
+    await device.create_control("b", ControlType.VALUE, value=2)
+    messages = await watch_messages(connect, "/devices/dev/#")
+    if offline:
+        await proxy.drop(client)
+
+    await device.remove()
+
+    assert not device.exists and not first.exists
+    await proxy.restore(client)
+    await wait_retained(broker.port, "/devices/dev/#", {})
+    await wait_until(lambda: len(get_erased_topics(messages)) == 7)
+    assert get_erased_topics(messages) == [
+        "/devices/dev/controls/b",
+        "/devices/dev/controls/b/meta/error",
+        "/devices/dev/controls/a",
+        "/devices/dev/controls/a/meta/error",
+        "/devices/dev/controls/b/meta",
+        "/devices/dev/controls/a/meta",
+        "/devices/dev/meta",
+    ]
+
+
+@pytest.mark.parametrize("offline", [False, True], ids=["online", "offline"])
+async def test_erasure_stage_waits_until_the_broker_confirmed_the_one_before(
+    broker: MosquittoBroker,
+    dead_link: tuple[DeadLinkProxy, Client],
+    monkeypatch: pytest.MonkeyPatch,
+    offline: bool,
+) -> None:
+    """
+    The broker confirms one value erasure of remove() late. Until then the meta of the controls
+    and of the device stays in the broker, the next stages wait. A removal made without a link keeps
+    its stages when it goes out after reconnect.
+    """
+    proxy, client = dead_link
+    device = await client.create_device("dev")
+    for name in ("a", "b"):
+        await device.create_control(name, ControlType.VALUE, value=1)
+    held = asyncio.Event()
+    release = asyncio.Event()
+
+    async def confirm_the_first_erasure_late(send: Send, _topic: str, payload: Any) -> None:
+        await send()
+        if payload is None and not held.is_set():
+            held.set()
+            await release.wait()
+
+    intercept_publish(monkeypatch, confirm_the_first_erasure_late)
+    if offline:
+        await proxy.drop(client)
+    removal = asyncio.ensure_future(device.remove())
+    proxy.dead = False
+    await wait_or_dump(held.wait(), timeout=20)
+    await asyncio.sleep(0.2)
+
+    assert sorted(await read_retained(broker.port, "/devices/dev/#")) == [
+        "/devices/dev/controls/a/meta",
+        "/devices/dev/controls/b/meta",
+        "/devices/dev/meta",
+    ]
+    release.set()
+    await wait_or_dump(removal, timeout=5)
+    await wait_retained(broker.port, "/devices/dev/#", {})
+
+
+@pytest.mark.parametrize("name", INVALID_NAMES)
+async def test_invalid_name_is_refused_before_the_broker_hears_of_it(
+    broker: MosquittoBroker, client: Client, name: str
+) -> None:
+    """
+    An empty name or /, +, # would break the topic structure, a control character would make mosquitto drop
+    the connection. Every call that takes a device, control or driver name refuses it before it subscribes
+    or publishes anything.
+    """
+    device = await client.create_device("dev")
+    subscriptions = get_internals(client)["subscriptions"]
+    calls = [
+        client.create_device(name),
+        device.create_control(name, ControlType.VALUE),
+        client.get_device(name),
+        client.get_control(f"{name}/ctl"),
+        client.get_control(f"dev/{name}"),
+        client.get_device_snapshot(name),
+    ]
+
+    for call in calls:
+        with pytest.raises(InvalidNameError):
+            await call
+    with pytest.raises(InvalidNameError) as error:
+        Client(name)
+    assert isinstance(error.value, MqttLibError) and isinstance(error.value, ValueError)
+
+    assert get_internals(client)["subscriptions"] == subscriptions
+    assert list(await read_retained(broker.port, "#")) == ["/devices/dev/meta"]
+
+
+async def test_create_device_returns_the_device_when_the_link_drops_at_its_command_subscription(
+    connect: ConnectClient, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The link drops while create_device subscribes to the commands of the new device. The device is own already
+    and the subscription stays in the client until reconnect, so create_device returns the device.
+    """
+    subscribe = subscriber_module.Subscriber.subscribe
+    cut: list[str] = []
+
+    async def cut_the_command_subscription(
+        self: subscriber_module.Subscriber, topic_filters: list[str], *args: Any, **kwargs: Any
+    ) -> None:
+        await subscribe(self, topic_filters, *args, **kwargs)
+        if topic_filters[0].endswith("/on") and not cut:
+            cut.append(topic_filters[0])
+            raise BrokerDisconnectedError("the broker link is lost")
+
+    monkeypatch.setattr(subscriber_module.Subscriber, "subscribe", cut_the_command_subscription)
+
+    device = await wait_or_dump(client.create_device("dev"), timeout=5)
+
+    assert device.is_own and cut == ["/devices/dev/controls/+/on"]
+    relay = await device.create_control("relay", ControlType.SWITCH, value=False)
+    commands: list[bool] = []
+    relay.on_command(lambda _control, value: commands.append(value))
+    user = await connect("user")
+    await user.raw.publish("/devices/dev/controls/relay/on", "1")
+    await wait_until(lambda: commands == [True])
+
+
+async def test_command_to_readonly_control_reaches_no_handler_until_readonly_is_off(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    A readonly control has no /on by the convention. Like wb-rules, the client drops a command to it, for the
+    control handler and the device handler alike. Once readonly is off, commands come again. The service
+    itself still writes the control and presses its readonly button.
+    """
+    device = await client.create_device("dev")
+    relay = await device.create_control("relay", ControlType.SWITCH, value=False, readonly=True)
+    button = await device.create_control("button", ControlType.PUSHBUTTON, readonly=True)
+    commands: list[str] = []
+    relay.on_command(lambda _control, value: commands.append(f"control {value}"))
+    device.on_control_command(lambda _control, value: commands.append(f"device {value}"))
+    # The raw handler gets the command after the client has already passed it on or dropped it
+    seen: list[Message] = []
+    await client.raw.subscribe("/devices/dev/controls/relay/on", seen.append)
+    user = await connect("user")
+    published: list[tuple[str, bytes]] = []
+    await user.raw.subscribe(
+        "/devices/dev/controls/+", lambda message: published.append((message.topic, message.payload))
+    )
+
+    await relay.set_value(True)
+    await button.set_value(True)
+    await wait_until(
+        lambda: {("/devices/dev/controls/relay", b"1"), ("/devices/dev/controls/button", b"1")}
+        <= set(published)
+    )
+    assert relay.value is True
+    await user.raw.publish("/devices/dev/controls/relay/on", "1")
+    await wait_until(lambda: len(seen) == 1)
+    await relay.update_meta(readonly=False)
+    await user.raw.publish("/devices/dev/controls/relay/on", "0")
+
+    await wait_until(lambda: sorted(commands) == ["control False", "device False"])
+
+
+async def test_device_and_control_exist_once(client: Client) -> None:
+    """
+    A second create of the same name is an AlreadyCreatedError, also two creates of one device at once.
+    It is a MqttLibError and a ValueError too.
+    """
+    device = await client.create_device("X")
+    await device.create_control("c", ControlType.VALUE, value=1)
+
+    with pytest.raises(AlreadyCreatedError) as error:
+        await client.create_device("X")
+    assert not isinstance(error.value, DeviceTakenError)
+    assert isinstance(error.value, MqttLibError) and isinstance(error.value, ValueError)
+    with pytest.raises(AlreadyCreatedError):
+        await device.create_control("c", ControlType.VALUE)
+    subscriptions = get_internals(client)["subscriptions"]
+    results = await asyncio.gather(
+        client.create_device("Y"), client.create_device("Y"), return_exceptions=True
+    )
+
+    assert sorted(type(result).__name__ for result in results) == ["AlreadyCreatedError", "Device"]
+    # the commands to the controls of Y, an own device is not followed otherwise
+    assert get_internals(client)["subscriptions"] == subscriptions + 1
+
+
+@pytest.mark.parametrize("other", ["remove", "remove with a handler", "set_value"])
+async def test_create_control_racing_another_task_leaves_a_consistent_state(
+    broker: MosquittoBroker, client: Client, other: str
+) -> None:
+    """
+    Another task removes the device or writes the control while create_control waits for the broker.
+
+    create_control does not fail, a removed control leaves nothing in the broker, a newer value stays.
+    """
+    device = await client.create_device("dev")
+    if other == "remove with a handler":
+        get_control_object(client, "dev/c").on_value(lambda control, value, previous: None)
+
+    async def other_task() -> None:
+        if other == "set_value":
+            await get_control_object(client, "dev/c").set_value(7)
+        else:
+            await device.remove()
+
+    await wait_or_dump(
+        asyncio.gather(device.create_control("c", ControlType.VALUE, value=5), other_task()), timeout=5
+    )
+
+    expected = {}
+    if other == "set_value":
+        expected = {
+            "/devices/dev/meta": b'{"driver": "test-service"}',
+            "/devices/dev/controls/c/meta": FIRST_VALUE_META,
+            "/devices/dev/controls/c": b"7",
+        }
+    await wait_retained(broker.port, "/devices/dev/#", expected)
+    assert get_control_object(client, "dev/c").value == (7 if other == "set_value" else None)
+    await restart_broker(broker, client)
+    await wait_retained(broker.port, "/devices/dev/#", expected)
+
+
+async def test_own_pushbutton_press_is_an_event_only_when_it_went_out(
+    broker: MosquittoBroker, client: Client
+) -> None:
+    """
+    Every press reaches on_value as (True, None). Without a link a press raises and is not an event.
+    """
+    button = await (await client.create_device("dev")).create_control("button", ControlType.PUSHBUTTON)
+    presses = []
+    button.on_value(lambda control, value, previous: presses.append((value, previous)))
+
+    await button.set_value(True)
+    await button.set_value(True)
+    await wait_until(lambda: len(presses) == 2)
+    await asyncio.to_thread(broker.stop)
+    await wait_until(lambda: not client.is_connected)
+    with pytest.raises(BrokerDisconnectedError):
+        await button.set_value(True)
+    await asyncio.sleep(0.2)
+
+    assert presses == [(True, None), (True, None)] and button.value is None
+
+
+async def test_press_of_a_cancelled_caller_still_goes_out_and_is_an_event(
+    connect: ConnectClient, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The caller of a press is cancelled while the broker has not confirmed it yet. The press goes out
+    and still reaches on_value once the broker confirms it.
+    """
+    button = await (await client.create_device("dev")).create_control("button", ControlType.PUSHBUTTON)
+    presses: list = []
+    button.on_value(lambda control, value, previous: presses.append((value, previous)))
+    messages = await watch_messages(connect, "/devices/dev/controls/button")
+
+    async def confirm_late(send: Send, topic: str, _payload: Any) -> None:
+        await send()
+        if topic == "/devices/dev/controls/button":
+            await asyncio.sleep(0.5)
+
+    intercept_publish(monkeypatch, confirm_late)
+    with pytest.raises(TimeoutError):
+        await asyncio.wait_for(button.set_value(True), 0.1)
+
+    await wait_until(
+        lambda: presses == [(True, None)] and [message.payload for message in messages] == [b"1"]
+    )
+
+
+async def test_own_listeners_survive_removal_and_creation_again(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    Listeners of an own control stay through remove() and work with the control created again. remove()
+    clears the value and the error with on_value and on_error, as an erasure by a driver does, and the meta
+    of the control and of the device reads empty.
+    """
+    device = await client.create_device("dev")
+    relay = await device.create_control(
+        "relay", ControlType.SWITCH, value=False, error=ControlErrorFlags.READ
+    )
+    events: dict[str, list] = {"added": [], "removed": [], "value": [], "error": [], "command": []}
+    relay.on_added(events["added"].append)
+    relay.on_removed(events["removed"].append)
+    relay.on_value(lambda control, value, previous: events["value"].append((value, previous)))
+    relay.on_error(lambda control, error, previous: events["error"].append((error, previous)))
+    relay.on_command(lambda control, value: events["command"].append(value))
+    await wait_until(lambda: events["added"] and events["value"] and events["error"])
+
+    await device.remove()
+    assert relay.meta == ControlMeta() and device.meta == DeviceMeta()
+    device = await client.create_device("dev")
+    await device.create_control("relay", ControlType.SWITCH, value=True)
+    user = await connect("user")
+    await user.raw.publish("/devices/dev/controls/relay/on", "0")
+
+    await wait_until(lambda: events["command"] == [False])
+    assert events["added"] == [relay, relay] and events["removed"] == [relay]
+    assert events["value"] == [(False, None), (None, False), (True, None)]
+    assert events["error"] == [
+        (ControlErrorFlags.READ, ControlErrorFlags.NONE),
+        (ControlErrorFlags.NONE, ControlErrorFlags.READ),
+    ]
+
+
+async def test_remove_driver_devices_erases_controls_first_and_device_meta_last(
+    connect: ConnectClient,
+) -> None:
+    """
+    A half done cleanup leaves the device meta with the driver name, so the next one finds it.
+    """
+    other = await connect("other")
+    await publish_retained(
+        other,
+        {
+            "/devices/old/meta": '{"driver": "service"}',
+            "/devices/old/meta/name": "Old",
+            "/devices/old/controls/a/meta": '{"type": "value"}',
+            "/devices/old/controls/a": "1",
+            "/devices/old/controls/a/meta/error": "r",
+        },
+    )
+    messages = await watch_messages(connect, "/devices/old/#")
+    client = await connect("service")
+
+    await client.remove_driver_devices()
+
+    await wait_until(lambda: len(get_erased_topics(messages)) == 5)
+    assert get_erased_topics(messages) == [
+        "/devices/old/controls/a",
+        "/devices/old/controls/a/meta/error",
+        "/devices/old/controls/a/meta",
+        "/devices/old/meta/name",
+        "/devices/old/meta",
+    ]
+
+
+async def test_remove_driver_devices_right_after_reconnect_erases_own_devices_not_replayed_yet(
+    broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    remove_driver_devices() is called right after reconnect, before the replay brought the own devices back
+    to the broker. It erases them all the same, the client knows its own devices.
+    """
+    names = [f"d{index:02d}" for index in range(5)]
+    for name in names:
+        await (await client.create_device(name)).create_control("c", ControlType.VALUE, value=1)
+    release = asyncio.Event()
+
+    async def hold_device_metas(send: Send, topic: str, payload: Any) -> None:
+        if payload is not None and topic.count("/") == 3 and topic.endswith("/meta"):
+            await release.wait()
+        await send()
+
+    intercept_publish(monkeypatch, hold_device_metas)
+    await restart_broker(broker, client)
+    # The erasures wait behind the held metas, those go out once remove_driver_devices has read the broker
+    asyncio.get_running_loop().call_later(1, release.set)
+
+    removed = await wait_or_dump(client.remove_driver_devices(), timeout=10)
+
+    assert removed == names and not any(get_device_object(client, name).is_own for name in names)
+    await wait_retained(broker.port, "/devices/#", {})
+
+
+async def test_remove_driver_devices_erases_a_device_that_a_cancelled_create_device_finishes(
+    broker: MosquittoBroker, connect: ConnectClient, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A service stops while create_device erases what its previous run left under the name, as in the quick
+    start. The cancelled create_device still makes the device own, remove_driver_devices right after it
+    waits for that and erases the device too.
+    """
+    other = await connect("other")
+    await publish_retained(
+        other,
+        {
+            "/devices/dev/meta": '{"driver": "test-service"}',
+            "/devices/dev/controls/old/meta": '{"type": "value"}',
+            "/devices/dev/controls/old": "1",
+        },
+    )
+    erasing = asyncio.Event()
+
+    async def slow_erasures(send: Send, topic: str, payload: Any) -> None:
+        if payload is None and topic.startswith("/devices/dev/"):
+            erasing.set()
+            await asyncio.sleep(0.3)
+        await send()
+
+    intercept_publish(monkeypatch, slow_erasures)
+    creating = asyncio.ensure_future(client.create_device("dev"))
+    await wait_or_dump(erasing.wait(), timeout=5)
+    await cancel_and_wait(creating)
+
+    assert await wait_or_dump(client.remove_driver_devices(), timeout=10) == ["dev"]
+    await wait_until(lambda: get_internals(client)["internal tasks"] == 0)
+    assert not get_device_object(client, "dev").is_own
+    await wait_retained(broker.port, "/devices/dev/#", {})
+
+
+async def test_remove_driver_devices_keeps_a_device_created_while_its_leftovers_are_read(
+    broker: MosquittoBroker, connect: ConnectClient, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A previous run of the service left a device in the broker. remove_driver_devices reads what is under
+    its name, and right then the service creates a device with this name. The new device is not
+    a leftover, it stays.
+    """
+    previous_run = await connect("previous")
+    await publish_retained(
+        previous_run,
+        {
+            "/devices/X/meta": '{"driver": "test-service"}',
+            "/devices/X/controls/old/meta": '{"type": "value"}',
+        },
+    )
+    # pylint: disable=protected-access
+    read_from_broker = client._subscriber.read_retained
+
+    async def read_then_create(topic_filters: list[str]) -> dict[str, bytes]:
+        leftovers = await read_from_broker(topic_filters)
+        if topic_filters == ["/devices/X/#"]:
+            # Once, and the reads of create_device go as they are
+            monkeypatch.setattr(client._subscriber, "read_retained", read_from_broker)
+            device = await client.create_device("X")
+            await device.create_control("new", ControlType.VALUE, value=1)
+        return leftovers
+
+    monkeypatch.setattr(client._subscriber, "read_retained", read_then_create)
+
+    await client.remove_driver_devices()
+
+    assert get_device_object(client, "X").is_own
+    assert set(await read_retained(broker.port, "/devices/X/#")) == {
+        "/devices/X/meta",
+        "/devices/X/controls/new/meta",
+        "/devices/X/controls/new",
+    }
+
+
+async def test_device_error_is_set_cleared_and_erased_before_the_device_meta(
+    broker: MosquittoBroker, connect: ConnectClient, client: Client
+) -> None:
+    """
+    The error of the device itself goes to /devices/<device>/meta/error, once per change. remove() clears it
+    with on_error and erases it before the device meta.
+    """
+    device = await client.create_device("dev")
+    await device.create_control("temp", ControlType.VALUE, value=1)
+    events = []
+    device.on_error(lambda _device, error, previous: events.append((error, previous)))
+    messages = await watch_messages(connect, "/devices/dev/#")
+
+    await device.set_error(ControlErrorFlags.READ)
+    await device.set_error(ControlErrorFlags.READ)
+    await device.set_error(ControlErrorFlags.NONE)
+    await device.set_error(ControlErrorFlags.WRITE)
+    assert device.error == ControlErrorFlags.WRITE
+    await device.remove()
+
+    await wait_until(lambda: "/devices/dev/meta" in get_erased_topics(messages))
+    errors = [message.payload for message in messages if message.topic == "/devices/dev/meta/error"]
+    assert errors == [b"r", b"", b"w", b""]
+    last_seen = {message.topic: index for index, message in enumerate(messages)}
+    assert last_seen["/devices/dev/meta/error"] < last_seen["/devices/dev/meta"]
+    assert await read_retained(broker.port, "/devices/dev/#") == {}
+    await wait_until(lambda: len(events) == 4)
+    assert events == [
+        (ControlErrorFlags.READ, ControlErrorFlags.NONE),
+        (ControlErrorFlags.NONE, ControlErrorFlags.READ),
+        (ControlErrorFlags.WRITE, ControlErrorFlags.NONE),
+        (ControlErrorFlags.NONE, ControlErrorFlags.WRITE),
+    ]
+
+
+@pytest.mark.parametrize("steps", [0, 1, 2, 5])
+async def test_create_control_cancelled_at_any_point_is_whole_or_absent(
+    broker: MosquittoBroker, client: Client, steps: int
+) -> None:
+    """
+    The task that creates a control is cancelled while it waits for the broker. The control is either
+    there whole, with its meta and value in the broker also after reconnect, or not there at all.
+    """
+    device = await client.create_device("dev")
+    attempt = asyncio.ensure_future(device.create_control("c", ControlType.VALUE, value=5))
+    for _ in range(steps):
+        await asyncio.sleep(0)
+    await cancel_and_wait(attempt)
+    control = get_control_object(client, "dev/c")
+    expected = {}
+    if control.exists:
+        expected = {"/devices/dev/controls/c/meta": FIRST_VALUE_META, "/devices/dev/controls/c": b"5"}
+
+    await wait_retained(broker.port, "/devices/dev/controls/c/#", expected)
+    await restart_broker(broker, client)
+    await wait_retained(broker.port, "/devices/dev/controls/c/#", expected)
+
+
+@pytest.mark.parametrize("steps", [1, 2, 5])
+async def test_removal_cancelled_midway_still_erases_the_control(
+    broker: MosquittoBroker, client: Client, steps: int
+) -> None:
+    """
+    The task that removes a control is cancelled while the erasure goes out. The control is gone in the
+    broker and stays gone after reconnect, a second remove() has nothing to do.
+    """
+    control = await (await client.create_device("dev")).create_control("c", ControlType.VALUE, value=5)
+    await control.set_error(ControlErrorFlags.READ)
+    attempt = asyncio.ensure_future(control.remove())
+    for _ in range(steps):
+        await asyncio.sleep(0)
+    await cancel_and_wait(attempt)
+
+    assert not control.exists
+    await wait_retained(broker.port, "/devices/dev/controls/c/#", {})
+    await restart_broker(broker, client)
+    await wait_retained(broker.port, "/devices/dev/controls/c/#", {})
+    await control.remove()
+
+
+async def test_control_created_again_while_its_removal_goes_out_keeps_the_new_meta(
+    broker: MosquittoBroker, client: Client
+) -> None:
+    """
+    One task removes a control, another creates it again with another type before the erasure is through.
+    The erasure does not touch the new control, in the broker and after reconnect.
+    """
+    device = await client.create_device("dev")
+    mode = await device.create_control("mode", ControlType.VALUE, value=1)
+
+    await wait_or_dump(
+        asyncio.gather(mode.remove(), device.create_control("mode", ControlType.TEXT, value="auto")),
+        timeout=5,
+    )
+
+    meta = b'{"type": "text", "readonly": false, "hidden": false, "order": 2}'
+    expected = {"/devices/dev/controls/mode/meta": meta, "/devices/dev/controls/mode": b"auto"}
+    assert mode.exists and mode.value == "auto"
+    await wait_retained(broker.port, "/devices/dev/controls/mode/#", expected)
+    await restart_broker(broker, client)
+    await wait_retained(broker.port, "/devices/dev/controls/mode/#", expected)
+
+
+async def test_device_created_again_while_its_removal_goes_out_gets_commands(
+    connect: ConnectClient, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    One task removes a device, another creates it again while the broker has not confirmed the erasure
+    of the old device meta yet. The new device keeps the subscription to its commands.
+    """
+    device = await client.create_device("dev")
+    await device.create_control("relay", ControlType.SWITCH, value=False)
+    commands: list[bool] = []
+    delayed: list[str] = []
+
+    async def confirm_the_first_meta_erasure_late(send: Send, topic: str, payload: Any) -> None:
+        await send()
+        if topic == "/devices/dev/meta" and payload is None and not delayed:
+            delayed.append(topic)
+            await asyncio.sleep(1)
+
+    intercept_publish(monkeypatch, confirm_the_first_meta_erasure_late)
+
+    async def create_again() -> None:
+        again = await client.create_device("dev")
+        relay = await again.create_control("relay", ControlType.SWITCH, value=False)
+        relay.on_command(lambda _control, value: commands.append(value))
+
+    await wait_or_dump(asyncio.gather(device.remove(), create_again()), timeout=5)
+    user = await connect("user")
+    await user.raw.publish("/devices/dev/controls/relay/on", "1")
+
+    await wait_until(lambda: commands == [True])
+    assert delayed and get_internals(client)["subscriptions"] == 1
+
+
+@pytest.mark.parametrize("with_handler", [False, True], ids=["without a handler", "with a handler"])
+async def test_press_of_a_button_removed_before_the_broker_answered_is_no_event(
+    client: Client, with_handler: bool
+) -> None:
+    """
+    A press waits for PUBACK, and the button is removed meanwhile. The press ends without an error
+    and without an event.
+    """
+    button = await (await client.create_device("dev")).create_control("button", ControlType.PUSHBUTTON)
+    presses: list = []
+    if with_handler:
+        button.on_value(lambda _control, value, _previous: presses.append(value))
+
+    press = asyncio.ensure_future(button.set_value(True))
+    await asyncio.sleep(0)
+    await button.remove()
+    await wait_or_dump(press, timeout=5)
+
+    await asyncio.sleep(0.1)
+    assert not presses and not button.exists
+
+
+async def test_changes_reach_the_broker_in_the_order_of_the_calls(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    Changes of several tasks go out in the order of the calls, each with its own value, also while
+    the erasure of another device holds them between its stages. A press does not overtake a value set
+    before it. A repeated value goes out again, as every press does.
+    """
+    other = await client.create_device("other")
+    for name in ("a", "b"):
+        await other.create_control(name, ControlType.VALUE, value=1)
+    device = await client.create_device("dev")
+    level = await device.create_control("level", ControlType.VALUE, value=0)
+    button = await device.create_control("button", ControlType.PUSHBUTTON)
+    messages = await watch_messages(connect, "/devices/dev/controls/+")
+
+    def get_seen() -> list[str]:
+        return [f"{message.topic.rsplit('/', 1)[1]}={message.payload.decode()}" for message in messages]
+
+    await wait_until(lambda: get_seen() == ["level=0"])
+    messages.clear()
+
+    await wait_or_dump(
+        asyncio.gather(
+            other.remove(),
+            level.set_value(1),
+            level.set_value(2),
+            level.set_value(2),
+            button.set_value(True),
+            button.set_value(True),
+            level.set_value(3),
+        ),
+        timeout=5,
+    )
+
+    await wait_until(lambda: len(messages) == 6)
+    assert get_seen() == ["level=1", "level=2", "level=2", "button=1", "button=1", "level=3"]
+
+
+@pytest.mark.parametrize("offline", [False, True], ids=["online", "offline"])
+@pytest.mark.parametrize("removed", RAW_SUBTOPIC_ERASURES)
+async def test_remove_erases_what_the_service_published_under_it(
+    broker: MosquittoBroker,
+    connect: ConnectClient,
+    dead_link: tuple[DeadLinkProxy, Client],
+    offline: bool,
+    removed: str,
+) -> None:
+    """
+    remove() of a device or a control erases also the legacy meta subtopics the service published itself
+    with raw.publish, without a link after reconnect. A subtopic goes before the meta it belongs to, one
+    of a control with the values, one of the device with the control meta, /meta/driver with the device meta.
+    """
+    erased, remaining = RAW_SUBTOPIC_ERASURES[removed]
+    proxy, client = dead_link
+    device = await client.create_device("dev")
+    temp = await device.create_control("temp", ControlType.VALUE, value=1)
+    await client.raw.publish("/devices/dev/meta/name", "Dev", retain=True)
+    await client.raw.publish("/devices/dev/meta/driver", "test-service", retain=True)
+    await client.raw.publish("/devices/dev/controls/temp/meta/type", "value", retain=True)
+    messages = await watch_messages(connect, "/devices/dev/#")
+    if offline:
+        await proxy.drop(client)
+
+    await (device if removed == "device" else temp).remove()
+
+    await proxy.restore(client)
+    await wait_retained(broker.port, "/devices/dev/#", remaining)
+    await wait_until(lambda: len(get_erased_topics(messages)) == len(erased))
+    assert get_erased_topics(messages) == erased
+
+
+async def test_device_handler_gets_commands_of_all_controls_in_order(
+    connect: ConnectClient, driver: Client, client: Client
+) -> None:
+    """
+    on_control_command of an own device gets the commands of every control in one queue, in the order
+    they came. remove_handler of a control does not take it off, the one of the device does. A foreign
+    device refuses it.
+    """
+    device = await client.create_device("dev")
+    first = await device.create_control("K1", ControlType.SWITCH, value=False)
+    await device.create_control("K2", ControlType.SWITCH, value=False)
+    commands: list[tuple[str, Any]] = []
+
+    async def on_command(control: Control, value: Any) -> None:
+        commands.append((control.name, value))
+        await asyncio.sleep(0.01)
+
+    device.on_control_command(on_command)
+    user = await connect("user")
+    for name, payload in [("K1", "1"), ("K2", "1"), ("K1", "0"), ("K2", "0")]:
+        await user.raw.publish(f"/devices/dev/controls/{name}/on", payload)
+    await wait_until(lambda: len(commands) == 4)
+    first.remove_handler(on_command)
+    await user.raw.publish("/devices/dev/controls/K1/on", "1")
+    await wait_until(lambda: len(commands) == 5)
+    device.remove_handler(on_command)
+    await user.raw.publish("/devices/dev/controls/K2/on", "1")
+
+    await asyncio.sleep(0.2)
+    assert commands == [("K1", True), ("K2", True), ("K1", False), ("K2", False), ("K1", True)]
+    await (await driver.create_device("foreign")).create_control("K1", ControlType.SWITCH, value=False)
+    with pytest.raises(NotOwnError):
+        (await client.get_device("foreign")).on_control_command(on_command)
+
+
+async def test_own_change_returns_before_puback_while_the_window_has_room(
+    broker: MosquittoBroker, driver: Client, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    set_value and set_error of an own device return once the connection took the message, the broker
+    confirms it later. With the window full the next change waits for the broker, so a service cannot run
+    ahead of it. update_meta and a command to a foreign control wait for PUBACK.
+    """
+    await (await driver.create_device("foreign")).create_control("level", ControlType.VALUE, value=0)
+    remote = await client.get_control("foreign/level")
+    controls = await create_window_of_controls(client, monkeypatch)
+    device = controls[0].device
+    release = asyncio.Event()
+
+    async def confirm_late(send: Send, _topic: str, _payload: Any) -> None:
+        await send()
+        await release.wait()
+
+    intercept_publish(monkeypatch, confirm_late)
+    command = asyncio.ensure_future(remote.set_value(5))
+    meta = asyncio.ensure_future(controls[0].update_meta(units="V"))
+    await asyncio.sleep(0.2)
+    assert not command.done() and not meta.done()
+    await wait_or_dump(controls[0].set_error(ControlErrorFlags.READ), timeout=1)
+    await wait_or_dump(device.set_error(ControlErrorFlags.WRITE), timeout=1)
+    # The command, the meta and two errors hold four places of the window, values fill the rest
+    for control in controls[1 : broker_connection.SEND_WINDOW - 3]:
+        await wait_or_dump(control.set_value(1), timeout=1)
+    held = asyncio.ensure_future(controls[-1].set_value(1))
+    await asyncio.sleep(0.2)
+    assert not held.done()
+
+    release.set()
+    await wait_or_dump(asyncio.gather(command, meta, held), timeout=5)
+    last = f"/devices/dev/controls/c{broker_connection.SEND_WINDOW - 1}"
+    await wait_retained(broker.port, last, {last: b"1"})
+
+
+async def test_own_change_waits_for_the_broker_behind_a_queued_erasure(
+    broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The window has room, but the queue holds the next stage of an erasure the broker has not confirmed yet.
+    set_value goes into the queue behind it and returns once the broker confirmed the value.
+    """
+    control = await (await client.create_device("dev")).create_control("c", ControlType.VALUE, value=1)
+    other = await client.create_device("other")
+    await other.create_control("c", ControlType.VALUE, value=1)
+    release = asyncio.Event()
+    held: list[str] = []
+
+    async def confirm_an_erasure_late(send: Send, topic: str, payload: Any) -> None:
+        await send()
+        if payload is None:
+            held.append(topic)
+            await release.wait()
+
+    intercept_publish(monkeypatch, confirm_an_erasure_late)
+    removal = asyncio.ensure_future(other.remove())
+    await wait_until(lambda: bool(held))
+    change = asyncio.ensure_future(control.set_value(2))
+    await asyncio.sleep(0.2)
+    assert not change.done()
+
+    release.set()
+    await wait_or_dump(asyncio.gather(removal, change), timeout=5)
+    await wait_retained(broker.port, "/devices/dev/controls/c", {"/devices/dev/controls/c": b"2"})
+
+
+async def test_paho_takes_the_whole_window_of_the_client(
+    connect: ConnectClient, dead_link: tuple[DeadLinkProxy, Client]
+) -> None:
+    """
+    30 values, more than the 20 paho sends at once by default, get their PUBACK 3 s late. paho sends them
+    all at once, so none of them waits in its queue past the 5 s deadline and none goes again.
+    """
+    proxy, client = dead_link
+    device = await client.create_device("dev")
+    controls = [await device.create_control(f"c{index}", ControlType.VALUE, value=0) for index in range(30)]
+    messages = await watch_messages(connect, "/devices/dev/controls/+")
+    await wait_until(lambda: len(messages) == 30)
+    messages.clear()
+
+    proxy.broker_delay = 3.0
+    for control in controls:
+        await wait_or_dump(control.set_value(1), timeout=1)
+    await asyncio.sleep(broker_connection.ACK_TIMEOUT_S + 1)
+
+    assert sorted(message.topic for message in messages) == sorted(
+        f"/devices/dev/controls/c{index}" for index in range(30)
+    )
+    proxy.broker_delay = 0.0
+
+
+async def test_own_change_right_before_close_reaches_the_broker(
+    broker: MosquittoBroker, client: Client
+) -> None:
+    """
+    A service sets a value and closes the client at once. The disconnect goes after the packet, so
+    the value is in the broker although set_value did not wait for PUBACK.
+    """
+    temp = await (await client.create_device("dev")).create_control("temp", ControlType.VALUE, value=1)
+
+    await temp.set_value(2)
+    await wait_or_dump(client.close(), timeout=5)
+
+    assert await read_retained(broker.port, "/devices/dev/controls/temp") == {
+        "/devices/dev/controls/temp": b"2"
+    }
+
+
+async def test_unexpected_error_on_the_way_to_paho_reaches_the_caller_and_changes_nothing(
+    broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    set_value, set_error and update_meta raise the error as it is. The value, the error, the meta and their
+    events stay as they were, and after reconnect the broker gets the old state.
+    """
+    temp = await (await client.create_device("dev")).create_control("temp", ControlType.VALUE, value=1)
+    events: list = []
+    temp.on_value(lambda control, value, previous: events.append(("value", value)))
+    temp.on_error(lambda control, error, previous: events.append(("error", error)))
+    temp.on_meta(lambda control: events.append("meta"))
+    await wait_until(lambda: events == [("value", 1)])
+
+    break_publish(monkeypatch, lambda topic, _payload: topic.startswith("/devices/dev/controls/temp"))
+    with pytest.raises(RuntimeError):
+        await temp.set_value(2)
+    with pytest.raises(RuntimeError):
+        await temp.set_error(ControlErrorFlags.READ)
+    with pytest.raises(RuntimeError):
+        await temp.update_meta(units="V")
+    monkeypatch.undo()
+
+    assert temp.value == 1 and temp.error == ControlErrorFlags.NONE and temp.meta.units is None
+    await restart_broker(broker, client)
+    value_topic = "/devices/dev/controls/temp"
+    await wait_retained(broker.port, value_topic, {value_topic: b"1"})
+    retained = await read_retained(broker.port, f"{value_topic}/meta/#")
+    assert list(retained) == [f"{value_topic}/meta"] and "units" not in json.loads(
+        retained[f"{value_topic}/meta"]
+    )
+    assert events == [("value", 1)]
+
+
+async def test_value_that_waited_in_the_queue_is_taken_at_once_and_a_later_error_is_not_raised(
+    client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    With the window full a value waits in the queue, the control takes it at once. An unexpected error when
+    it goes to paho later does not reach the caller, it is only logged.
+    """
+    controls = await create_window_of_controls(client, monkeypatch)
+    queued = controls[0]
+    release = asyncio.Event()
+    failures: list[str] = []
+
+    async def confirm_late_and_fail_the_queued(send: Send, topic: str, _payload: Any) -> None:
+        if topic == "/devices/dev/controls/c0":
+            failures.append(topic)
+            raise RuntimeError("broken paho")
+        await send()
+        await release.wait()
+
+    intercept_publish(monkeypatch, confirm_late_and_fail_the_queued)
+    # Twenty values the broker does not confirm yet fill the window
+    for control in controls[1:]:
+        await wait_or_dump(control.set_value(1), timeout=1)
+    await wait_or_dump(controls[1].set_value(2), timeout=1)
+    held = asyncio.ensure_future(queued.set_value(1))
+    await asyncio.sleep(0.2)
+    assert not held.done() and queued.value == 1
+
+    release.set()
+    await wait_or_dump(held, timeout=5)
+    assert failures and queued.value == 1
+
+
+async def test_unexpected_error_of_a_command_or_a_press_reaches_the_caller_as_it_is(
+    driver: Client, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    A command to a foreign control and a press of an own button raise the error itself, not
+    BrokerDisconnectedError. The press is no event.
+    """
+    await (await driver.create_device("foreign")).create_control("level", ControlType.VALUE, value=0)
+    remote = await client.get_control("foreign/level")
+    button = await (await client.create_device("dev")).create_control("button", ControlType.PUSHBUTTON)
+    presses: list = []
+    button.on_value(lambda control, value, previous: presses.append(value))
+
+    break_publish(monkeypatch, lambda _topic, _payload: True)
+    with pytest.raises(RuntimeError):
+        await remote.set_value(5)
+    with pytest.raises(RuntimeError):
+        await button.set_value(True)
+    await asyncio.sleep(0.2)
+
+    assert not presses
+
+
+async def test_command_or_press_that_waited_in_the_queue_gets_a_later_error_as_it_is(
+    driver: Client, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    With the window full a command to a foreign control and a press of an own button wait in the queue.
+    An unexpected error when they go to paho later reaches their callers as it is, the press is no event.
+    """
+    await (await driver.create_device("foreign")).create_control("level", ControlType.VALUE, value=0)
+    remote = await client.get_control("foreign/level")
+    controls = await create_window_of_controls(client, monkeypatch)
+    button = await controls[0].device.create_control("button", ControlType.PUSHBUTTON)
+    presses: list = []
+    button.on_value(lambda control, value, previous: presses.append(value))
+    release = asyncio.Event()
+
+    async def confirm_late_and_fail_the_events(send: Send, topic: str, _payload: Any) -> None:
+        if topic in ("/devices/foreign/controls/level/on", "/devices/dev/controls/button"):
+            raise RuntimeError("broken paho")
+        await send()
+        await release.wait()
+
+    intercept_publish(monkeypatch, confirm_late_and_fail_the_events)
+    # Values the broker does not confirm yet fill the window
+    for control in controls:
+        await wait_or_dump(control.set_value(1), timeout=1)
+    command = asyncio.ensure_future(remote.set_value(5))
+    press = asyncio.ensure_future(button.set_value(True))
+    await asyncio.sleep(0.2)
+    assert not command.done() and not press.done()
+
+    release.set()
+    with pytest.raises(RuntimeError):
+        await wait_or_dump(command, timeout=5)
+    with pytest.raises(RuntimeError):
+        await wait_or_dump(press, timeout=5)
+    await asyncio.sleep(0.2)
+
+    assert not presses
+
+
+async def test_create_control_that_fails_on_the_way_to_paho_is_taken_back(
+    connect: ConnectClient, broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The value of a new control fails on the way to paho after its meta went out. create_control raises
+    the error as it is, the control does not appear and the broker loses the meta again, also after
+    reconnect.
+    """
+    device = await client.create_device("dev")
+    added: list = []
+    device.on_control_added(added.append)
+    messages = await watch_messages(connect, "/devices/dev/controls/temp/#")
+
+    break_publish(monkeypatch, lambda topic, _payload: topic == "/devices/dev/controls/temp")
+    with pytest.raises(RuntimeError):
+        await device.create_control("temp", ControlType.VALUE, value=21)
+
+    assert "temp" not in device.controls
+    await wait_until(lambda: "/devices/dev/controls/temp/meta" in get_erased_topics(messages))
+    assert await read_retained(broker.port, "/devices/dev/controls/#") == {}
+    assert not added
+
+    # A later control goes out after it in the replay, so once the broker has that one it has all
+    monkeypatch.undo()
+    await device.create_control("other", ControlType.VALUE, value=1)
+    retained = await read_retained(broker.port, "/devices/dev/controls/#")
+    assert sorted(retained) == ["/devices/dev/controls/other", "/devices/dev/controls/other/meta"]
+    await restart_broker(broker, client)
+    await wait_retained(broker.port, "/devices/dev/controls/#", retained)
+
+
+async def test_remove_that_fails_on_the_way_to_paho_is_taken_back(
+    connect: ConnectClient, broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The erasure of the error fails after the erasure of the value went out. remove raises the error as it is,
+    the control stays and the broker gets the value back, also after reconnect.
+    """
+    device = await client.create_device("dev")
+    temp = await device.create_control("temp", ControlType.VALUE, value=21, error=ControlErrorFlags.READ)
+    messages = await watch_messages(connect, "/devices/dev/controls/temp")
+    await wait_until(lambda: len(messages) == 1)
+
+    break_publish(monkeypatch, lambda topic, payload: topic.endswith("/meta/error") and not payload)
+    with pytest.raises(RuntimeError):
+        await temp.remove()
+
+    assert temp.exists and temp.value == 21 and temp.error == ControlErrorFlags.READ
+    await wait_until(lambda: [message.payload for message in messages] == [b"21", b"", b"21"])
+    retained = await read_retained(broker.port, "/devices/dev/controls/temp/#")
+    assert retained["/devices/dev/controls/temp"] == b"21"
+    assert retained["/devices/dev/controls/temp/meta/error"] == b"r"
+
+    monkeypatch.undo()
+    await restart_broker(broker, client)
+    await wait_retained(broker.port, "/devices/dev/controls/temp/#", retained)
