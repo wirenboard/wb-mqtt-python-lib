@@ -52,7 +52,7 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
     Raises:
         ValueError: no client could connect to this URL, for example ? or # that would cut the URL, unix://
             with a host, a login with a character the broker refuses, a password that is not valid UTF-8
-            or / in the login that is not percent-encoded. The text does not quote the URL.
+            or / in the login or the password that is not percent-encoded. The text does not quote the URL.
     """
     # The URL parses and has a known scheme
     if not isinstance(broker_url, str) or "://" not in broker_url:
@@ -71,7 +71,7 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
         raise ValueError(f"{_INVALID_URL}, the scheme is not unix, tcp, mqtt-tcp or ws")
 
     # The login. mosquitto drops the connection on a login with a character it refuses, and the client
-    # would retry forever. A password is binary data in MQTT, any character goes.
+    # would retry forever. A password is binary data in MQTT, any character with a UTF-8 form goes.
     username = unquote(parsed.username) if parsed.username else None
     password = unquote(parsed.password) if parsed.password else None
     if username is not None and any(is_refused_by_broker(char) for char in username):
@@ -87,7 +87,8 @@ def parse_broker_url(broker_url: str) -> BrokerAddress:
             raise ValueError(f"{_INVALID_URL}, a unix socket path goes after three slashes")
         return BrokerAddress(transport, parsed.path, username=username, password=password)
     if "@" in parsed.path:
-        # A / in the login that is not percent-encoded moves the rest of the login and the host into the path
+        # A / in the login or the password that is not percent-encoded moves the rest of them and the host
+        # into the path
         raise ValueError(f"{_INVALID_URL}, / in the login or the password goes percent-encoded")
     if hostname is None:
         raise ValueError(f"{_INVALID_URL}, no host")

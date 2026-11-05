@@ -45,7 +45,7 @@ def get_live_objects() -> Counter:
     )
 
 
-async def object_growth(cycle: Callable[[int], Awaitable[None]]) -> dict[str, int]:
+async def get_object_growth(cycle: Callable[[int], Awaitable[None]]) -> dict[str, int]:
     """
     Types whose number of live objects grew in both measured windows, with the growth of the second one.
     """
@@ -118,7 +118,7 @@ async def test_create_and_remove_cycles_do_not_grow(connect: ConnectClient, clie
         await device.remove()
         await wait_until(lambda: not remote.exists)
 
-    growth = await wait_or_dump(object_growth(cycle), timeout=120)
+    growth = await wait_or_dump(get_object_growth(cycle), timeout=120)
     client_counts, reader_counts = get_internals(client), get_internals(reader)
     await wait_or_dump(cycle(0), timeout=10)
 
@@ -144,7 +144,7 @@ async def test_raw_subscribe_read_and_unsubscribe_cycles_leave_nothing(client: C
         await client.raw.read("/leak/#")
         await client.raw.unsubscribe(handler)
 
-    growth = await wait_or_dump(object_growth(cycle), timeout=120)
+    growth = await wait_or_dump(get_object_growth(cycle), timeout=120)
 
     assert not growth
     assert get_internals(client) == {
@@ -171,7 +171,7 @@ async def test_waits_that_time_out_leave_nothing(client: Client, level: Control)
         with pytest.raises(TimeoutError):
             await client.get_device("missing_dev", timeout=0.001)
 
-    growth = await wait_or_dump(object_growth(cycle), timeout=60)
+    growth = await wait_or_dump(get_object_growth(cycle), timeout=60)
 
     assert not growth
     assert get_internals(client)["waits"] == 0
@@ -223,7 +223,7 @@ async def test_handlers_and_waits_on_ever_new_controls_leave_nothing(driver: Cli
         with pytest.raises(TimeoutError):
             await client.get_control(f"dev/absent{index}", timeout=0.001)
 
-    growth = await wait_or_dump(object_growth(cycle), timeout=120)
+    growth = await wait_or_dump(get_object_growth(cycle), timeout=120)
 
     assert not growth
 
@@ -254,6 +254,6 @@ async def test_values_and_errors_without_meta_under_new_names_leave_nothing(
         await known.set_value(index)
         await remote.wait_value(index, timeout=5)
 
-    growth = await wait_or_dump(object_growth(cycle), timeout=120)
+    growth = await wait_or_dump(get_object_growth(cycle), timeout=120)
 
     assert not growth

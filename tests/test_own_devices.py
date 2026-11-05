@@ -19,6 +19,7 @@ from tests.broker import (
     create_window_of_controls,
     get_control_object,
     get_device_object,
+    get_erased_topics,
     get_internals,
     intercept_publish,
     publish_retained,
@@ -27,6 +28,7 @@ from tests.broker import (
     wait_or_dump,
     wait_retained,
     wait_until,
+    watch_messages,
 )
 from tests.conftest import ConnectClient
 from wb_mqtt_lib import (
@@ -76,22 +78,6 @@ RAW_SUBTOPIC_ERASURES = {
         },
     ),
 }
-
-
-async def watch_messages(connect: ConnectClient, topic_filter: str) -> list[Message]:
-    """
-    Messages under the filter from now on, the retained ones first, as another client gets them.
-    """
-    messages: list[Message] = []
-    await (await connect("watcher")).raw.subscribe(topic_filter, messages.append)
-    return messages
-
-
-def get_erased_topics(messages: list[Message]) -> list[str]:
-    """
-    Topics the messages erased, in the order the broker sent the erasures.
-    """
-    return [message.topic for message in messages if not message.payload]
 
 
 async def test_device_meta_and_control_order_follow_convention(
@@ -1188,6 +1174,37 @@ async def test_own_change_returns_before_puback_while_the_window_has_room(
     await wait_or_dump(asyncio.gather(command, meta, held), timeout=5)
     last = f"/devices/dev/controls/c{broker_connection.SEND_WINDOW - 1}"
     await wait_retained(broker.port, last, {last: b"1"})
+
+
+async def test_own_change_waits_for_the_broker_behind_a_queued_erasure(
+    broker: MosquittoBroker, client: Client, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """
+    The window has room, but the queue holds the next stage of an erasure the broker has not confirmed yet.
+    set_value goes into the queue behind it and returns once the broker confirmed the value.
+    """
+    control = await (await client.create_device("dev")).create_control("c", ControlType.VALUE, value=1)
+    other = await client.create_device("other")
+    await other.create_control("c", ControlType.VALUE, value=1)
+    release = asyncio.Event()
+    held: list[str] = []
+
+    async def confirm_an_erasure_late(send: Send, topic: str, payload: Any) -> None:
+        await send()
+        if payload is None:
+            held.append(topic)
+            await release.wait()
+
+    intercept_publish(monkeypatch, confirm_an_erasure_late)
+    removal = asyncio.ensure_future(other.remove())
+    await wait_until(lambda: bool(held))
+    change = asyncio.ensure_future(control.set_value(2))
+    await asyncio.sleep(0.2)
+    assert not change.done()
+
+    release.set()
+    await wait_or_dump(asyncio.gather(removal, change), timeout=5)
+    await wait_retained(broker.port, "/devices/dev/controls/c", {"/devices/dev/controls/c": b"2"})
 
 
 async def test_paho_takes_the_whole_window_of_the_client(

@@ -31,6 +31,7 @@ from tests.broker import (
     wait_or_dump,
     wait_retained,
     wait_until,
+    watch_messages,
 )
 from tests.conftest import ConnectClient
 from wb_mqtt_lib import BrokerDisconnectedError, Client, Control, ControlType, Message
@@ -892,9 +893,7 @@ async def test_event_when_the_link_drops_fails_at_once_and_does_not_go_later(
     proxy, client = dead_link
     device = await client.create_device("dev")
     await device.create_control("temp", ControlType.VALUE, value=1)
-    watcher = await connect("watcher")
-    events: list[Message] = []
-    await watcher.raw.subscribe("/events/#", events.append)
+    events = await watch_messages(connect, "/events/#")
 
     proxy.dead = True
     removal = asyncio.ensure_future(device.remove()) if behind_an_erasure else None

@@ -19,7 +19,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional
 
 import aiomqtt
 
-from wb_mqtt_lib import ControlType
+from wb_mqtt_lib import ControlType, Message
 from wb_mqtt_lib._mqtt import broker_connection
 
 HOST = "127.0.0.1"
@@ -32,7 +32,7 @@ CANCEL_TIMEOUT_S = 6.0
 # JSON meta of the first control of type value without other fields, as the library publishes it
 FIRST_VALUE_META = b'{"type": "value", "readonly": false, "hidden": false, "order": 1}'
 # Device, control and driver names that would break the topic structure or that mosquitto drops
-# the connection on: control characters, C1, a non-character
+# the connection on: control characters, C1, a surrogate, a non-character
 INVALID_NAMES = [
     "",
     "a/b",
@@ -43,6 +43,7 @@ INVALID_NAMES = [
     "a\x7fb",
     "a\x85b",
     "a\x9fb",
+    "a\ud800b",
     "a\ufdd0b",
     "a\ufdefb",
 ]
@@ -122,14 +123,14 @@ def intercept_publish(monkeypatch: Any, intercept: Callable[[Send, str, Any], Aw
     monkeypatch.setattr(aiomqtt.Client, "publish", intercepted)
 
 
-def break_publish(monkeypatch: Any, breaks: Callable[[str, Any], bool]) -> None:
+def break_publish(monkeypatch: Any, is_broken: Callable[[str, Any], bool]) -> None:
     """
-    paho raises RuntimeError on every publication of the test for which breaks(topic, payload) is true,
+    paho raises RuntimeError on every publication of the test for which is_broken(topic, payload) is true,
     the rest go out as usual.
     """
 
     async def intercept(send: Send, topic: str, payload: Any) -> None:
-        if breaks(topic, payload):
+        if is_broken(topic, payload):
             raise RuntimeError("broken paho")
         await send()
 
@@ -498,6 +499,22 @@ async def read_retained(port: int, topic_filter: str, timeout: float = 5.0) -> d
 
         await wait_or_dump(collect(), timeout)
     return retained
+
+
+async def watch_messages(connect: Callable[..., Awaitable[Any]], topic_filter: str) -> list[Message]:
+    """
+    Messages under the filter from now on, the retained ones first, as another client gets them.
+    """
+    messages: list[Message] = []
+    await (await connect("watcher")).raw.subscribe(topic_filter, messages.append)
+    return messages
+
+
+def get_erased_topics(messages: list[Message]) -> list[str]:
+    """
+    Topics the messages erased, in the order the broker sent the erasures.
+    """
+    return [message.topic for message in messages if not message.payload]
 
 
 class DeadLinkProxy:

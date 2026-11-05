@@ -460,8 +460,7 @@ class DeviceSnapshot:
 
 def to_payload(meta: ControlMeta, value: Any) -> str:
     """
-    Value of the service turned into the string for the topic. The own control keeps what parse_value reads
-    from it, as a reader of the topic gets it.
+    Value of the service turned into the string for the topic.
 
     switch, alarm and wo-switch take bool, pushbutton takes True. value and range take a finite number,
     rounded by precision. local_time and w1-id take an int. rgb takes three ints from 0 to 255. text and
@@ -543,8 +542,9 @@ def _format_number(value: Union[int, float], precision: Optional[float]) -> str:
     if not precision:
         if isinstance(value, int):
             return str(value)
-        # As wb-rules does, the shortest digits, without an exponent and without a trailing .0
-        text = format(Decimal(repr(value)).normalize(), "f")
+        # As wb-rules does, the shortest digits, without an exponent and without a trailing .0. The digits
+        # come from float itself, a subclass such as numpy.float64 has a repr of its own.
+        text = format(Decimal(repr(float(value))).normalize(), "f")
         return "0" if text == "-0" else text
     # As wb-rules does, as many decimals as precision has, 0.25 gives two and 2.5 gives one,
     # without trailing zeros

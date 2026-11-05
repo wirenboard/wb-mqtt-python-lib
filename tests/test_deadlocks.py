@@ -76,10 +76,10 @@ async def test_concurrent_subscribe_and_unsubscribe_on_one_topic(
     """
     received: list[tuple[str, int]] = []
 
-    def handlers(batch: str, count: int) -> list[Callable[[Message], None]]:
+    def get_handlers(batch: str, count: int) -> list[Callable[[Message], None]]:
         return [lambda message, index=index: received.append((batch, index)) for index in range(count)]
 
-    first_batch, second_batch = handlers("first", 20), handlers("second", 20)
+    first_batch, second_batch = get_handlers("first", 20), get_handlers("second", 20)
     await wait_or_dump(
         asyncio.gather(*(client.raw.subscribe("/race/topic", handler) for handler in first_batch)),
         timeout=5,

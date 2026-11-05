@@ -27,6 +27,16 @@ from wb_mqtt_lib import (
 )
 from wb_mqtt_lib._convention.values import ControlMetaFields
 
+
+class ReprOfItsOwnFloat(float):
+    """
+    A float subclass with a repr of its own, as numpy.float64 has.
+    """
+
+    def __repr__(self) -> str:
+        return f"np.float64({float.__repr__(self)})"
+
+
 # Numbers as wb-rules publishes them with precision and without it, checked on the controller
 FORMATTED = [
     (ControlType.VALUE, 0.1, 21.53, b"21.5"),
@@ -45,6 +55,7 @@ FORMATTED = [
     (ControlType.VALUE, None, 1e16, b"10000000000000000"),
     (ControlType.VALUE, None, 0.00001, b"0.00001"),
     (ControlType.VALUE, None, 0.1 + 0.2, b"0.30000000000000004"),
+    (ControlType.VALUE, None, ReprOfItsOwnFloat(21.5), b"21.5"),
     (ControlType.RANGE, None, 100, b"100"),
     (ControlType.SWITCH, None, True, b"1"),
     (ControlType.SWITCH, None, False, b"0"),
@@ -99,7 +110,7 @@ async def test_value_goes_out_formatted_by_type(broker: MosquittoBroker, client:
     """
     Precision rounds the MQTT payload, and the own number is the payload read back, as a reader gets it.
     Without precision a number goes out in the shortest digits, without an exponent or trailing .0,
-    as in wb-rules. Other types go out by convention.
+    as in wb-rules, also a float subclass with a repr of its own. Other types go out by convention.
     """
     device = await client.create_device("dev")
     controls = []

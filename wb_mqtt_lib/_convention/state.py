@@ -2,8 +2,8 @@
 State of own and foreign devices of one client, by name.
 
 Every change the listeners can see goes through here, becomes events for them and wakes the waits.
-device_manager.py sets the fields nobody listens to itself, the topics of own records, next_order and
-the last payload. Nothing here talks to the broker, device_manager.py does that.
+device_manager.py sets the fields nobody listens to itself, the topics of own records and next_order.
+Nothing here talks to the broker, device_manager.py does that.
 """
 
 import asyncio
@@ -363,7 +363,7 @@ class State:  # pylint: disable=too-many-public-methods
         The control got its meta. A value and an error that came before the meta reach the listeners now.
         """
         # State before the change, for _announce_device_change
-        control = self.ensure_control(device_name, control_name)
+        control = self._devices[device_name].controls[control_name]
         state_before = self._get_device_state(device_name)
 
         # The record gets the meta. A press is an event, a value kept for a pushbutton is a leftover.
@@ -385,10 +385,9 @@ class State:  # pylint: disable=too-many-public-methods
             self._emit_control_event(
                 device_name, control_name, ControlEvent.ERROR, control.error, ControlErrorFlags.NONE
             )
-        if control.payload is not None:
-            value = parse_value(meta, control.payload)
-            warn_if_converted_to_bool(value, control.payload, f"{device_name}/{control_name}")
-            self.set_control_value(device_name, control_name, value)
+        self._set_control_value(
+            device_name, control_name, _read_value(control, f"{device_name}/{control_name}", warn=True)
+        )
 
     def set_control_meta(self, device_name: str, control_name: str, meta: ControlMeta) -> None:
         """
@@ -403,9 +402,8 @@ class State:  # pylint: disable=too-many-public-methods
         if meta.control_type != previous.control_type:
             if meta.control_type == ControlType.PUSHBUTTON:
                 control.payload = None
-            control.value = None if control.payload is None else parse_value(meta, control.payload)
+            control.value = _read_value(control, f"{device_name}/{control_name}", warn=True)
             if control.value is not None:
-                warn_if_converted_to_bool(control.value, control.payload, f"{device_name}/{control_name}")
                 _wake_value_waits(control)
         self._emit_control_event(device_name, control_name, ControlEvent.META)
 
@@ -421,7 +419,7 @@ class State:  # pylint: disable=too-many-public-methods
         state_before = self._get_device_state(device_name)
 
         # The value and the error go in the reverse order of the appearance
-        self.set_control_value(device_name, control_name, None)
+        self._set_control_value(device_name, control_name, None)
         self.set_control_error(device_name, control_name, ControlErrorFlags.NONE)
 
         # The record is cleared
@@ -449,27 +447,22 @@ class State:  # pylint: disable=too-many-public-methods
         if control is not None and control.is_unused:
             del device.controls[control_name]
 
-    def set_control_value(
-        self, device_name: str, control_name: str, value: Any, notify_unchanged: bool = False
+    def set_control_payload(
+        self, device_name: str, control_name: str, payload: Optional[str], skip_unchanged: bool = False
     ) -> None:
         """
-        A new value of the control. on_value comes when the value changed, with notify_unchanged also when
-        it is the same. An erased value comes as None.
+        A new payload of the control, published by the service or received from the broker, None erases it.
+
+        The value is what the payload reads as by the meta, as a reader of the topic gets it. Every value
+        reaches on_value, with skip_unchanged the same value does not. Without meta the payload waits for it.
         """
         control = self._devices[device_name].controls[control_name]
-        unchanged = value == control.value or (_is_nan(value) and _is_nan(control.value))
-        if unchanged and not notify_unchanged:
-            return
-        previous = control.value
-        control.value = value
-        if value is None:
-            # An erased value reaches on_value as None, erasing no value is no event. Removal comes
-            # with the meta.
-            if previous is not None:
-                self._emit_control_event(device_name, control_name, ControlEvent.VALUE, None, previous)
-            return
-        self._emit_control_event(device_name, control_name, ControlEvent.VALUE, value, previous)
-        _wake_value_waits(control)
+        # A payload repeated, after reconnect for example, is in the log already
+        is_new = payload != control.payload
+        control.payload = payload
+        if control.meta is not None:
+            value = _read_value(control, f"{device_name}/{control_name}", warn=is_new)
+            self._set_control_value(device_name, control_name, value, skip_unchanged)
 
     def emit_pushbutton_press(self, device_name: str, control_name: str) -> None:
         """
@@ -605,6 +598,27 @@ class State:  # pylint: disable=too-many-public-methods
             return [(control_object, control.error, ControlErrorFlags.NONE)]
         return []
 
+    def _set_control_value(
+        self, device_name: str, control_name: str, value: Any, skip_unchanged: bool = False
+    ) -> None:
+        """
+        A new value of the control. Every one reaches on_value, with skip_unchanged the same value does not.
+        An erased value comes as None.
+        """
+        control = self._devices[device_name].controls[control_name]
+        if skip_unchanged and (value == control.value or (_is_nan(value) and _is_nan(control.value))):
+            return
+        previous = control.value
+        control.value = value
+        if value is None:
+            # An erased value reaches on_value as None, erasing no value is no event. Removal comes
+            # with the meta.
+            if previous is not None:
+                self._emit_control_event(device_name, control_name, ControlEvent.VALUE, None, previous)
+            return
+        self._emit_control_event(device_name, control_name, ControlEvent.VALUE, value, previous)
+        _wake_value_waits(control)
+
     def _get_device_state(self, device_name: str) -> _DeviceState:
         device = self._devices[device_name]
         return _DeviceState(device.exists, device.meta or DeviceMeta())
@@ -664,6 +678,19 @@ class State:  # pylint: disable=too-many-public-methods
             control_listeners.emit_event(event, args)
         if to_device:
             device.listeners.emit_event(device_event, args)
+
+
+def _read_value(control: ControlRecord, address: str, warn: bool) -> Any:
+    """
+    The value the kept payload of a control with meta reads as, None without a payload. With warn a switch
+    payload other than «1» and «0» goes to the log.
+    """
+    if control.payload is None:
+        return None
+    value = parse_value(control.meta, control.payload)
+    if warn:
+        warn_if_converted_to_bool(value, control.payload, address)
+    return value
 
 
 def _is_nan(value: Any) -> bool:

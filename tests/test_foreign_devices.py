@@ -599,7 +599,7 @@ async def test_subscription_that_fails_after_its_caller_gave_up_is_tried_again(
     def on_added(_device: Device) -> None:
         pass
 
-    def handler_refused() -> bool:
+    def is_handler_refused() -> bool:
         # The subscription fails once its wait for the broker ends, up to the 5 s of an answer
         try:
             get_device_object(client, "dev").on_added(on_added)
@@ -608,7 +608,7 @@ async def test_subscription_that_fails_after_its_caller_gave_up_is_tried_again(
         get_device_object(client, "dev").remove_handler(on_added)
         return False
 
-    await wait_until(handler_refused, timeout=15)
+    await wait_until(is_handler_refused, timeout=15)
     await wait_until(lambda: client.is_connected, timeout=10)
     device = await wait_or_dump(client.get_device("dev"), timeout=5)
     assert device.exists and device.controls["temp"].value == 1

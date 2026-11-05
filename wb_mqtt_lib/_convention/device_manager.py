@@ -301,10 +301,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
         # The control goes into the state as a foreign one does, the error and the value wait in the record
         # and reach the listeners with the meta
         device.next_order = max(device.next_order, meta.order + 1)
-        control = self.state.ensure_control(device_name, control_name)
-        control.topics = control_topics
-        control.error = error
-        control.payload = payload
+        self.state.ensure_control(device_name, control_name).topics = control_topics
+        self.state.set_control_error(device_name, control_name, error)
+        self.state.set_control_payload(device_name, control_name, payload)
         self.state.mark_control_added(device_name, control_name, meta)
         await self._wait_for_broker(published)
 
@@ -341,11 +340,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
             return
 
         # Own control of another type, every call goes out and reaches on_value. None erases the value.
-        payload, kept_value, error = None, None, control.error
+        payload, error = None, control.error
         if value is not None:
             payload = to_payload(control.meta, value)
-            # The value is what the payload reads as, as a reader of the topic gets it
-            kept_value = parse_value(control.meta, payload)
             # A value is a successful read. As the convention says, r goes first, then the value goes out.
             error &= ~ControlErrorFlags.READ
         messages: list[tuple[str, Optional[str]]] = []
@@ -354,9 +351,8 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
         messages.append((control.topics.value, payload))
         published = self._publisher.put_retained(messages, wait_for_puback=False)
 
-        control.payload = payload
         self.state.set_control_error(device_name, control_name, error)
-        self.state.set_control_value(device_name, control_name, kept_value, notify_unchanged=True)
+        self.state.set_control_payload(device_name, control_name, payload)
         await self._wait_for_broker(published)
 
     async def set_control_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
@@ -872,18 +868,12 @@ def _apply_value(
             state.emit_pushbutton_press(device_name, control_name)
         return
 
-    # The payload is kept, the value is parsed by the meta, now or once the meta comes
-    previous_payload = control.payload
-    control.payload = payload or None
-    if control.meta is not None:
-        value = parse_value(control.meta, payload) if payload else None
-        # A payload repeated, after reconnect for example, is in the log already
-        if control.payload != previous_payload:
-            warn_if_converted_to_bool(value, payload, f"{device_name}/{control_name}")
-        state.set_control_value(
-            device_name, control_name, value, notify_unchanged=delivery is not _Delivery.RESENT
-        )
-    elif not payload:
+    # The payload is kept, the value is parsed by the meta, now or once the meta comes. The same value sent
+    # again by the broker on resubscription is no event.
+    state.set_control_payload(
+        device_name, control_name, payload or None, skip_unchanged=delivery is _Delivery.RESENT
+    )
+    if not payload:
         state.drop_control_if_unused(device_name, control_name)
 
 

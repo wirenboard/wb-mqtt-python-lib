@@ -45,7 +45,7 @@ class _MirrorRecord:
 class _Batch:
     """
     Publications of one call. The future ends when each of them is confirmed or left to the replay,
-    and fails with the error of a publication that failed, ClientClosedError for one left unconfirmed
+    and fails with the error of an event that failed, ClientClosedError for one left unconfirmed
     by close().
     """
 
@@ -207,7 +207,8 @@ class Publisher:
             BrokerDisconnectedError: an event while the link is down, or the link is lost or the broker
                 does not confirm it in broker_connection.ACK_TIMEOUT_S.
             ClientClosedError: the client closes before the broker confirmed the message.
-            Exception: an unexpected error of paho or aiomqtt, as it is. A retained message is taken back.
+            Exception: an unexpected error of paho or aiomqtt while the call hands the message to paho, as it
+                is. A retained message is taken back.
         """
         if not isinstance(topic, checks.CheckedTopic):
             checks.check_topic(topic)
@@ -226,11 +227,13 @@ class Publisher:
         Returns:
             A future that ends when the broker confirmed the message. It fails with BrokerDisconnectedError
             when the link is lost or the broker does not confirm it in broker_connection.ACK_TIMEOUT_S,
-            and with ClientClosedError when the client closes before that.
+            with ClientClosedError when the client closes before that, and with an unexpected error of paho
+            or aiomqtt when the event waited in the queue.
 
         Raises:
             BrokerDisconnectedError: the link is down.
-            Exception: an unexpected error of paho or aiomqtt on the way to paho, as it is.
+            Exception: an unexpected error of paho or aiomqtt while the call hands the event to paho, as
+                it is.
         """
         return self._put([_Message(topic, payload)], PUBLICATION_QOS, retain=False, wait_for_puback=True)
 
@@ -243,14 +246,15 @@ class Publisher:
         so an error of paho leaves that state as it was.
 
         Returns:
-            A future that ends when the broker confirmed every message or they are left to the replay, and
-            fails with ClientClosedError when the client closes before that. Without wait_for_puback it is
-            done already when paho took the messages at once. With a full window or a queue it still waits
-            for the broker, so a service cannot run ahead of it.
+            A future that ends when the broker confirmed every message, they are left to the replay or
+            dropped after an error of paho, and fails with ClientClosedError when the client closes before
+            that. Without wait_for_puback it is done already when paho took the messages at once. With
+            a full window or a queue it still waits for the broker, so a service cannot run ahead of it.
 
         Raises:
-            Exception: an unexpected error of paho or aiomqtt on the way to paho, as it is. The mirror gets
-                back what it had before the call, and what paho sent already gets the old payload again.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho, as
+                it is. The mirror gets back what it had before the call, and what paho sent already gets
+                the old payload again.
         """
         return self._put(
             [_Message(topic, payload) for topic, payload in messages],

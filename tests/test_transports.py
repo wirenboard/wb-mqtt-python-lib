@@ -221,6 +221,7 @@ async def test_login_rejected_after_a_reconnect_is_retried(login_broker: Mosquit
         ("admin:s3cret@localhost:1883", ["admin", "s3cret"]),
         ("ws://svc:Zm9v/YmFy+==@host:18883", ["Zm9v", "YmFy", "svc"]),
         ("tcp://svc%0Aname:pw@host:1883", ["svc", "name", "pw"]),
+        ("tcp://svc\udcffname:pw@host:1883", ["svc", "name", "pw"]),
         ("tcp://svc%EF%B7%90:pw@host:1883", ["svc", "pw"]),
         ("tcp://svc:secret@host:1883?keepalive=5", ["svc", "secret"]),
         ("ws://svc:secret@host:18883/mqtt#frag", ["svc", "secret"]),
