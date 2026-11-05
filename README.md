@@ -284,8 +284,7 @@ class Service:
         await self._client.close()
 
     async def _relay_command(self, control: Control, value: Any) -> None:
-        if isinstance(value, bool):
-            await control.set_value(value)
+        await control.set_value(value)
 
 
 async def main() -> None:
