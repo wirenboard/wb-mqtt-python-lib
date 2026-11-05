@@ -91,7 +91,7 @@ class Listener:
         if self._stopped:
             return
         self._queue.put_nowait(args)
-        if self._task is None and not self._stopped:
+        if self._task is None:
             self._task = asyncio.create_task(self._handle_events(), name=f"listener {self._description}")
             self._registry.add_listener_task(self._task)
         if self._queue.qsize() >= BACKLOG_WARNING and not self._backlog_reported:
