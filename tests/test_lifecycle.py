@@ -67,12 +67,11 @@ async def test_close_from_a_command_handler(connect: ConnectClient, client: Clie
     )
 
 
+@pytest.mark.usefixtures("level")
 async def test_close_from_a_background_task_and_from_outside_at_once(client: Client) -> None:
     """
     Two close calls at once, one of them inside a background task of the client, both return.
     """
-    await (await client.create_device("dev")).create_control("level", ControlType.VALUE, value=0)
-
     inside = client.start_task(client.close(), "close inside")
     await wait_or_dump(asyncio.gather(inside, client.close()), timeout=5)
 
@@ -204,7 +203,7 @@ async def test_async_with_connects_and_closes(broker: MosquittoBroker) -> None:
     """
     async with connects the client and closes it on the way out. The devices stay in the broker.
     """
-    async with Client("test-service", broker.url()) as client:
+    async with Client("test-service", broker.get_url()) as client:
         assert client.is_connected
         await (await client.create_device("dev")).create_control("temp", ControlType.VALUE, value=21)
 
@@ -232,7 +231,7 @@ async def test_connect_given_up_while_the_broker_is_down_stops_retrying_and_repo
     """
     await asyncio.to_thread(broker.stop)
     tasks_before = len(asyncio.all_tasks())
-    client = Client("test-service", broker.url())
+    client = Client("test-service", broker.get_url())
     changes: list[bool] = []
     client.on_connection_change(changes.append)
     try:
@@ -256,7 +255,7 @@ async def test_close_while_connect_retries_ends_connect_with_client_closed(broke
     connect raises ClientClosedError instead of returning as if it had connected.
     """
     await asyncio.to_thread(broker.stop)
-    client = Client("test-service", broker.url())
+    client = Client("test-service", broker.get_url())
     attempt = asyncio.ensure_future(client.connect())
     await asyncio.sleep(0.3)
 
@@ -283,7 +282,7 @@ async def test_connect_given_up_while_the_broker_is_silent_ends_on_time_and_free
         # Long before the CONNACK timeout of the attempt, 5 s
         assert time.monotonic() - started < 2
 
-        second = Client("test-service", broker.url())
+        second = Client("test-service", broker.get_url())
         await wait_or_dump(second.connect(), timeout=5)
         await wait_or_dump(second.close(), timeout=5)
         await wait_or_dump(stuck.close(), timeout=10)
@@ -308,7 +307,7 @@ async def test_connect_given_up_before_a_late_connack_restores_and_reports_nothi
         return entered
 
     monkeypatch.setattr(broker_connection.Connection, "__aenter__", connack_after_the_caller_gave_up)
-    client = Client("test-service", broker.url())
+    client = Client("test-service", broker.get_url())
     changes: list[bool] = []
     client.on_connection_change(changes.append)
     try:
@@ -320,11 +319,12 @@ async def test_connect_given_up_before_a_late_connack_restores_and_reports_nothi
         await wait_or_dump(client.close(), timeout=10)
 
 
-async def test_close_cancels_a_handler_that_removed_itself_and_still_runs(client: Client) -> None:
+async def test_close_cancels_a_handler_that_removed_itself_and_still_runs(
+    client: Client, level: Control
+) -> None:
     """
     A handler removed itself and still runs its call. close() cancels that call and returns after it ended.
     """
-    level = await (await client.create_device("dev")).create_control("level", ControlType.VALUE, value=0)
     running = asyncio.Event()
     ended: list[str] = []
 
@@ -356,7 +356,7 @@ async def test_connect_right_after_a_cancelled_one_waits_until_its_attempt_ends(
     proxy = DeadLinkProxy(broker.port)
     await proxy.start()
     proxy.dead = True
-    client = Client("test-service", proxy.url())
+    client = Client("test-service", proxy.get_url())
     try:
         attempt = asyncio.ensure_future(client.connect())
         await asyncio.sleep(0.3)
@@ -423,7 +423,7 @@ async def test_close_cancelled_midway_is_finished_by_the_next_close(broker: Mosq
     The task that closes the client is cancelled while close() waits for a background task that ends
     slowly. The cleanup goes on, the next close() waits for it, and the driver is free after it.
     """
-    client = Client("test-service", broker.url())
+    client = Client("test-service", broker.get_url())
     await wait_or_dump(client.connect(), timeout=5)
 
     async def slow_to_end() -> None:
@@ -440,7 +440,7 @@ async def test_close_cancelled_midway_is_finished_by_the_next_close(broker: Mosq
     await wait_or_dump(client.close(), timeout=5)
 
     assert not client.is_connected
-    second = Client("test-service", broker.url())
+    second = Client("test-service", broker.get_url())
     await wait_or_dump(second.connect(), timeout=5)
     await wait_or_dump(second.close(), timeout=5)
 

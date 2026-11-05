@@ -49,7 +49,7 @@ async def connect(broker: MosquittoBroker) -> AsyncIterator[ConnectClient]:
     clients = []
 
     async def factory(driver: str = "test-service", transport: str = "tcp") -> Client:
-        client = Client(driver, broker_url=broker.url(transport))
+        client = Client(driver, broker_url=broker.get_url(transport))
         await wait_or_dump(client.connect(), timeout=5)
         clients.append(client)
         return client
@@ -90,7 +90,7 @@ async def dead_link(broker: MosquittoBroker) -> AsyncIterator[tuple[DeadLinkProx
     """
     proxy = DeadLinkProxy(broker.port)
     await proxy.start()
-    client = Client("test-service", proxy.url())
+    client = Client("test-service", proxy.get_url())
     await wait_or_dump(client.connect(), timeout=5)
     yield proxy, client
     await wait_or_dump(client.close(), timeout=10)

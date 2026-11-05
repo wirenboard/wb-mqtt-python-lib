@@ -149,7 +149,7 @@ async def test_valid_login_connects(login_broker: MosquittoBroker, transport: st
     percent-encoded in the URL and reaches the broker decoded. A password is binary data in MQTT, so control
     characters in it are no reason to refuse the URL.
     """
-    client = Client("test-service", login_broker.url(transport, f"service:{quote(password, safe='')}"))
+    client = Client("test-service", login_broker.get_url(transport, f"service:{quote(password, safe='')}"))
 
     await wait_or_dump(client.connect(), timeout=5)
 
@@ -164,7 +164,7 @@ async def test_rejected_login_raises_instead_of_reconnecting(
     """
     Retrying a rejected login would not help, connect raises at once.
     """
-    client = Client("test-service", login_broker.url("tcp", login))
+    client = Client("test-service", login_broker.get_url("tcp", login))
 
     with pytest.raises(LoginRejectedError):
         await wait_or_dump(client.connect(), timeout=5)
@@ -179,7 +179,7 @@ async def test_login_rejected_after_a_reconnect_is_retried(login_broker: Mosquit
 
     Once the broker takes the login again, the client is back with its devices.
     """
-    url = login_broker.url("tcp", "service:secret")
+    url = login_broker.get_url("tcp", "service:secret")
     client = Client("test-service", url)
     reader = Client("reader", url)
     await wait_or_dump(client.connect(), timeout=5)

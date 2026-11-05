@@ -167,7 +167,7 @@ async def test_error_comes_from_meta_error_topic_and_json_meta(driver: Client, c
     await publish_retained(driver, {f"{base}/meta": json.dumps({"type": "value"}), base: "1"})
     control = await client.get_control("dev/ctl")
     errors = []
-    control.on_error(lambda c, error, previous: errors.append(error))
+    control.on_error(lambda _control, error, previous: errors.append(error))
 
     await driver.raw.publish(f"{base}/meta/error", "r", retain=True)
     await wait_until(lambda: errors[-1:] == [ControlErrorFlags.READ])
@@ -195,7 +195,7 @@ async def test_foreign_control_rejects_operations_of_the_owner(
     with pytest.raises(NotOwnError):
         await control.remove()
     with pytest.raises(NotOwnError):
-        control.on_command(lambda c, value: None)
+        control.on_command(lambda _control, value: None)
     with pytest.raises(NotOwnError):
         await device.create_control("new", ControlType.VALUE)
     with pytest.raises(NotOwnError):
@@ -322,6 +322,28 @@ async def test_device_meta_erased_while_its_controls_stay_is_a_meta_change(
     assert remote.exists
 
 
+async def test_empty_meta_of_a_device_made_of_controls_is_no_meta_change(
+    connect: ConnectClient, client: Client
+) -> None:
+    """
+    A device made of controls alone gets the JSON meta {} and loses it again. Its title and driver stay
+    empty, so on_meta does not come until a title does.
+    """
+    other = await connect("other")
+    await other.raw.publish("/devices/X/controls/a/meta", '{"type": "value"}', retain=True)
+    remote = await client.get_device("X")
+    titles: list[TranslatedTitle] = []
+    remote.on_meta(lambda changed: titles.append(changed.meta.title))
+
+    await other.raw.publish("/devices/X/meta", "{}", retain=True)
+    await other.raw.publish("/devices/X/meta", "", retain=True)
+    await other.raw.publish("/devices/X/meta", '{"title": "New"}', retain=True)
+
+    await wait_until(lambda: titles == [TranslatedTitle("New")])
+    await asyncio.sleep(0.2)
+    assert titles == [TranslatedTitle("New")]
+
+
 async def test_foreign_pushbutton_presses_and_a_retained_leftover(
     driver: Client, dead_link: tuple[DeadLinkProxy, Client]
 ) -> None:
@@ -401,13 +423,13 @@ async def test_operations_on_a_control_that_is_gone_raise_control_missing(
     await wait_until(lambda: commands == [5])
 
 
-@pytest.mark.parametrize("appearance", ["device and control", "control meta only", "never"])
+@pytest.mark.parametrize("appearance", ["device and control", "control meta only", "own device", "never"])
 async def test_wait_ends_when_the_name_appears_or_at_the_timeout(
     driver: Client, client: Client, appearance: str
 ) -> None:
     """
-    get_control and get_device with a timeout return as soon as the name appears, not at the timeout.
-    A name that does not appear in time gives TimeoutError.
+    get_control and get_device with a timeout return as soon as the name appears, not at the timeout,
+    also when the client itself creates the device. A name that does not appear in time gives TimeoutError.
     """
     timeout = 1 if appearance == "never" else 5
     control_wait = asyncio.ensure_future(client.get_control("late/temp", timeout=timeout))
@@ -418,6 +440,11 @@ async def test_wait_ends_when_the_name_appears_or_at_the_timeout(
         await (await driver.create_device("late")).create_control("temp", ControlType.VALUE, value=1)
     elif appearance == "control meta only":
         await driver.raw.publish("/devices/late/controls/temp/meta", '{"type": "value"}', retain=True)
+    elif appearance == "own device":
+        # The device alone ends its wait, before any control comes
+        device = await client.create_device("late")
+        await wait_or_dump(device_wait, timeout=3)
+        await device.create_control("temp", ControlType.VALUE, value=1)
 
     results = await wait_or_dump(asyncio.gather(control_wait, device_wait, return_exceptions=True), timeout=3)
     if appearance == "never":
@@ -622,10 +649,10 @@ async def test_value_and_error_that_came_before_the_meta_show_once_the_control_a
     device = await client.get_device("dev")
     control = await client.get_control("dev/temp")
     calls: list = []
-    control.on_value(lambda c, value, previous: calls.append(("value", value, previous)))
-    control.on_error(lambda c, error, previous: calls.append(("control", error, previous)))
-    control.on_removed(lambda c: calls.append(("removed",)))
-    device.on_error(lambda d, error, previous: calls.append(("device", error, previous)))
+    control.on_value(lambda _control, value, previous: calls.append(("value", value, previous)))
+    control.on_error(lambda _control, error, previous: calls.append(("control", error, previous)))
+    control.on_removed(lambda _control: calls.append(("removed",)))
+    device.on_error(lambda _device, error, previous: calls.append(("device", error, previous)))
 
     await publish_retained(
         driver,

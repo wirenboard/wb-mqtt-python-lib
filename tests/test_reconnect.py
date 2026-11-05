@@ -420,7 +420,7 @@ async def test_raw_subscription_and_retained_publication_before_connect_take_eff
     keeps under its filter and the broker gets the retained message.
     """
     await driver.raw.publish("/state/x", "1", retain=True)
-    client = Client("test-service", broker.url())
+    client = Client("test-service", broker.get_url())
     received: list[Message] = []
 
     await wait_or_dump(client.raw.subscribe("/state/#", received.append), timeout=1)
@@ -445,7 +445,7 @@ async def test_connection_change_handlers_see_every_change_after_registration(
     of the link around a broker restart. A run of failed attempts gives one False. A handler registered
     after connect() gets only the changes after it, and close() gives none.
     """
-    client = Client("test-service", broker.url())
+    client = Client("test-service", broker.get_url())
     early: list[bool] = []
     late: list[bool] = []
     client.on_connection_change(early.append)
@@ -471,7 +471,7 @@ def test_connection_change_handler_can_be_registered_before_the_event_loop_runs(
     """
     A service may create the client and register the handler in synchronous code, before asyncio starts.
     """
-    client = Client("test-service", broker.url())
+    client = Client("test-service", broker.get_url())
     seen: list[bool] = []
     client.on_connection_change(seen.append)
 

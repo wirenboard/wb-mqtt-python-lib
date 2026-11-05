@@ -122,6 +122,20 @@ def intercept_publish(monkeypatch: Any, intercept: Callable[[Send, str, Any], Aw
     monkeypatch.setattr(aiomqtt.Client, "publish", intercepted)
 
 
+def break_publish(monkeypatch: Any, breaks: Callable[[str, Any], bool]) -> None:
+    """
+    paho raises RuntimeError on every publication of the test for which breaks(topic, payload) is true,
+    the rest go out as usual.
+    """
+
+    async def intercept(send: Send, topic: str, payload: Any) -> None:
+        if breaks(topic, payload):
+            raise RuntimeError("broken paho")
+        await send()
+
+    intercept_publish(monkeypatch, intercept)
+
+
 def ack_timeout() -> aiomqtt.MqttError:
     """
     What aiomqtt raises when the broker does not acknowledge in time.
@@ -207,7 +221,7 @@ class MosquittoBroker:
     def __exit__(self, *exc_info: Any) -> None:
         self.cleanup()
 
-    def url(self, transport: str = "tcp", login: str = "") -> str:
+    def get_url(self, transport: str = "tcp", login: str = "") -> str:
         """
         Broker URL for the library. login is «user:password».
         """
@@ -491,17 +505,19 @@ class DeadLinkProxy:
     TCP proxy in front of the broker that plays a link that is dead but not closed yet.
 
     While dead is True, everything both ways is read and thrown away. cut() closes every connection, which
-    is how such a link finally ends.
+    is how such a link finally ends. broker_delay holds what the broker sends, PUBACK too, that many
+    seconds.
     """
 
     def __init__(self, broker_port: int) -> None:
         self.broker_port = broker_port
         self.port = 0
         self.dead = False
+        self.broker_delay = 0.0
         self._server: Optional[asyncio.AbstractServer] = None
         self._writers: set[asyncio.StreamWriter] = set()
 
-    def url(self) -> str:
+    def get_url(self) -> str:
         return f"tcp://{HOST}:{self.port}"
 
     async def start(self) -> None:
@@ -543,20 +559,31 @@ class DeadLinkProxy:
         self._writers |= writers
         try:
             await asyncio.gather(
-                self._pipe(client_reader, broker_writer), self._pipe(broker_reader, client_writer)
+                self._pipe(client_reader, broker_writer),
+                self._pipe(broker_reader, client_writer, from_broker=True),
             )
         finally:
             self._writers -= writers
             for writer in writers:
                 writer.transport.abort()
 
-    async def _pipe(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _pipe(
+        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, from_broker: bool = False
+    ) -> None:
+        loop = asyncio.get_running_loop()
+        # When the last delayed chunk goes out, a later one goes after it
+        last_due = 0.0
         try:
             while True:
                 data = await reader.read(65536)
                 if not data:
                     return
-                if not self.dead:
+                if self.dead:
+                    continue
+                if from_broker and self.broker_delay:
+                    last_due = max(loop.time() + self.broker_delay, last_due + 0.001)
+                    loop.call_at(last_due, writer.write, data)
+                else:
                     writer.write(data)
                     await writer.drain()
         except (ConnectionError, OSError):

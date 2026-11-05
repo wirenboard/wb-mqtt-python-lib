@@ -39,9 +39,9 @@ async def test_state_listeners_fire_at_registration_with_previous_none(
     control = await client.get_control("dev/temp")
     calls = []
 
-    control.on_added(lambda c: calls.append("added"))
-    control.on_value(lambda c, value, previous: calls.append(("value", value, previous)))
-    control.on_meta(lambda c: calls.append("meta"))
+    control.on_added(lambda _control: calls.append("added"))
+    control.on_value(lambda _control, value, previous: calls.append(("value", value, previous)))
+    control.on_meta(lambda _control: calls.append("meta"))
 
     await wait_until(lambda: len(calls) == 2)
     assert sorted(calls, key=str) == sorted(["added", ("value", 3, None)], key=str)

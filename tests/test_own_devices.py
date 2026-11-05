@@ -14,6 +14,7 @@ from tests.broker import (
     DeadLinkProxy,
     MosquittoBroker,
     Send,
+    break_publish,
     cancel_and_wait,
     create_window_of_controls,
     get_control_object,
@@ -77,18 +78,20 @@ RAW_SUBTOPIC_ERASURES = {
 }
 
 
-async def watch_erasures(connect: ConnectClient, topic_filter: str) -> list[str]:
+async def watch_messages(connect: ConnectClient, topic_filter: str) -> list[Message]:
     """
-    Topics erased under the filter from now on, in the order the broker sends the erasures.
+    Messages under the filter from now on, the retained ones first, as another client gets them.
     """
-    erased: list[str] = []
+    messages: list[Message] = []
+    await (await connect("watcher")).raw.subscribe(topic_filter, messages.append)
+    return messages
 
-    def on_message(message: Message) -> None:
-        if not message.payload:
-            erased.append(message.topic)
 
-    await (await connect("watcher")).raw.subscribe(topic_filter, on_message)
-    return erased
+def get_erased_topics(messages: list[Message]) -> list[str]:
+    """
+    Topics the messages erased, in the order the broker sent the erasures.
+    """
+    return [message.topic for message in messages if not message.payload]
 
 
 async def test_device_meta_and_control_order_follow_convention(
@@ -210,21 +213,19 @@ async def test_error_of_create_control_goes_out_between_the_meta_and_the_value(
     device = await client.create_device("dev")
     errors: list = []
     device.on_control_error(lambda control, error, previous: errors.append((control.name, error, previous)))
-    watcher = await connect("watcher")
-    seen: list[str] = []
-    await watcher.raw.subscribe("/devices/dev/controls/temp/#", lambda message: seen.append(message.topic))
+    messages = await watch_messages(connect, "/devices/dev/controls/temp/#")
 
     temp = await device.create_control("temp", ControlType.VALUE, value=21, error=ControlErrorFlags.READ)
 
     assert temp.error == ControlErrorFlags.READ
-    await wait_until(lambda: len(seen) == 3 and len(errors) == 1)
-    assert seen == [
+    await wait_until(lambda: len(messages) == 3 and len(errors) == 1)
+    assert [message.topic for message in messages] == [
         "/devices/dev/controls/temp/meta",
         "/devices/dev/controls/temp/meta/error",
         "/devices/dev/controls/temp",
     ]
     assert errors == [("temp", ControlErrorFlags.READ, ControlErrorFlags.NONE)]
-    remote = await watcher.get_control("dev/temp")
+    remote = await (await connect("reader")).get_control("dev/temp")
     assert remote.error == ControlErrorFlags.READ and remote.value == 21
 
 
@@ -240,14 +241,9 @@ async def test_value_clears_the_read_error_before_it_goes_out(connect: ConnectCl
     events: list = []
     temp.on_error(lambda control, error, previous: events.append(("error", error, previous)))
     temp.on_value(lambda control, value, previous: events.append(("value", value, previous)))
-    watcher = await connect("watcher")
-    seen: list[tuple[str, bytes]] = []
-    await watcher.raw.subscribe(
-        "/devices/dev/controls/temp/#",
-        lambda message: seen.append((message.topic.rsplit("/", 1)[1], message.payload)),
-    )
-    await wait_until(lambda: len(seen) == 3 and len(events) == 2)
-    seen.clear()
+    messages = await watch_messages(connect, "/devices/dev/controls/temp/#")
+    await wait_until(lambda: len(messages) == 3 and len(events) == 2)
+    messages.clear()
     events.clear()
 
     await temp.set_value(None)
@@ -256,8 +252,13 @@ async def test_value_clears_the_read_error_before_it_goes_out(connect: ConnectCl
     await temp.set_value(23)
 
     assert temp.error == ControlErrorFlags.WRITE
-    await wait_until(lambda: len(seen) == 4 and len(events) == 4)
-    assert seen == [("temp", b""), ("error", b"w"), ("temp", b"22"), ("temp", b"23")]
+    await wait_until(lambda: len(messages) == 4 and len(events) == 4)
+    assert [(message.topic.rsplit("/", 1)[1], message.payload) for message in messages] == [
+        ("temp", b""),
+        ("error", b"w"),
+        ("temp", b"22"),
+        ("temp", b"23"),
+    ]
     assert sorted(events, key=str) == [
         ("error", ControlErrorFlags.WRITE, ControlErrorFlags.READ | ControlErrorFlags.WRITE),
         ("value", 22, None),
@@ -442,7 +443,7 @@ async def test_remove_erases_controls_first_and_device_meta_last(
     device = await client.create_device("dev")
     first = await device.create_control("a", ControlType.VALUE, value=1)
     await device.create_control("b", ControlType.VALUE, value=2)
-    erased = await watch_erasures(connect, "/devices/dev/#")
+    messages = await watch_messages(connect, "/devices/dev/#")
     if offline:
         await proxy.drop(client)
 
@@ -451,8 +452,8 @@ async def test_remove_erases_controls_first_and_device_meta_last(
     assert not device.exists and not first.exists
     await proxy.restore(client)
     await wait_retained(broker.port, "/devices/dev/#", {})
-    await wait_until(lambda: len(erased) == 7)
-    assert erased == [
+    await wait_until(lambda: len(get_erased_topics(messages)) == 7)
+    assert get_erased_topics(messages) == [
         "/devices/dev/controls/b",
         "/devices/dev/controls/b/meta/error",
         "/devices/dev/controls/a",
@@ -698,9 +699,7 @@ async def test_press_of_a_cancelled_caller_still_goes_out_and_is_an_event(
     button = await (await client.create_device("dev")).create_control("button", ControlType.PUSHBUTTON)
     presses: list = []
     button.on_value(lambda control, value, previous: presses.append((value, previous)))
-    watcher = await connect("watcher")
-    seen: list[bytes] = []
-    await watcher.raw.subscribe("/devices/dev/controls/button", lambda message: seen.append(message.payload))
+    messages = await watch_messages(connect, "/devices/dev/controls/button")
 
     async def confirm_late(send: Send, topic: str, _payload: Any) -> None:
         await send()
@@ -711,7 +710,9 @@ async def test_press_of_a_cancelled_caller_still_goes_out_and_is_an_event(
     with pytest.raises(TimeoutError):
         await asyncio.wait_for(button.set_value(True), 0.1)
 
-    await wait_until(lambda: presses == [(True, None)] and seen == [b"1"])
+    await wait_until(
+        lambda: presses == [(True, None)] and [message.payload for message in messages] == [b"1"]
+    )
 
 
 async def test_own_listeners_survive_removal_and_creation_again(
@@ -767,13 +768,13 @@ async def test_remove_driver_devices_erases_controls_first_and_device_meta_last(
             "/devices/old/controls/a/meta/error": "r",
         },
     )
-    erased = await watch_erasures(connect, "/devices/old/#")
+    messages = await watch_messages(connect, "/devices/old/#")
     client = await connect("service")
 
     await client.remove_driver_devices()
 
-    await wait_until(lambda: len(erased) == 5)
-    assert erased == [
+    await wait_until(lambda: len(get_erased_topics(messages)) == 5)
+    assert get_erased_topics(messages) == [
         "/devices/old/controls/a",
         "/devices/old/controls/a/meta/error",
         "/devices/old/controls/a/meta",
@@ -897,11 +898,7 @@ async def test_device_error_is_set_cleared_and_erased_before_the_device_meta(
     await device.create_control("temp", ControlType.VALUE, value=1)
     events = []
     device.on_error(lambda _device, error, previous: events.append((error, previous)))
-    watcher = await connect("watcher")
-    seen: list[tuple[str, bytes]] = []
-    await watcher.raw.subscribe(
-        "/devices/dev/#", lambda message: seen.append((message.topic, message.payload))
-    )
+    messages = await watch_messages(connect, "/devices/dev/#")
 
     await device.set_error(ControlErrorFlags.READ)
     await device.set_error(ControlErrorFlags.READ)
@@ -910,10 +907,10 @@ async def test_device_error_is_set_cleared_and_erased_before_the_device_meta(
     assert device.error == ControlErrorFlags.WRITE
     await device.remove()
 
-    await wait_until(lambda: ("/devices/dev/meta", b"") in seen)
-    errors = [payload for topic, payload in seen if topic == "/devices/dev/meta/error"]
+    await wait_until(lambda: "/devices/dev/meta" in get_erased_topics(messages))
+    errors = [message.payload for message in messages if message.topic == "/devices/dev/meta/error"]
     assert errors == [b"r", b"", b"w", b""]
-    last_seen = {topic: index for index, (topic, _payload) in enumerate(seen)}
+    last_seen = {message.topic: index for index, message in enumerate(messages)}
     assert last_seen["/devices/dev/meta/error"] < last_seen["/devices/dev/meta"]
     assert await read_retained(broker.port, "/devices/dev/#") == {}
     await wait_until(lambda: len(events) == 4)
@@ -1062,15 +1059,13 @@ async def test_changes_reach_the_broker_in_the_order_of_the_calls(
     device = await client.create_device("dev")
     level = await device.create_control("level", ControlType.VALUE, value=0)
     button = await device.create_control("button", ControlType.PUSHBUTTON)
-    watcher = await connect("watcher")
-    seen: list[str] = []
+    messages = await watch_messages(connect, "/devices/dev/controls/+")
 
-    def collect(message: Message) -> None:
-        seen.append(f"{message.topic.rsplit('/', 1)[1]}={message.payload.decode()}")
+    def get_seen() -> list[str]:
+        return [f"{message.topic.rsplit('/', 1)[1]}={message.payload.decode()}" for message in messages]
 
-    await watcher.raw.subscribe("/devices/dev/controls/+", collect)
-    await wait_until(lambda: seen == ["level=0"])
-    seen.clear()
+    await wait_until(lambda: get_seen() == ["level=0"])
+    messages.clear()
 
     await wait_or_dump(
         asyncio.gather(
@@ -1085,8 +1080,8 @@ async def test_changes_reach_the_broker_in_the_order_of_the_calls(
         timeout=5,
     )
 
-    await wait_until(lambda: len(seen) == 6)
-    assert seen == ["level=1", "level=2", "level=2", "button=1", "button=1", "level=3"]
+    await wait_until(lambda: len(messages) == 6)
+    assert get_seen() == ["level=1", "level=2", "level=2", "button=1", "button=1", "level=3"]
 
 
 @pytest.mark.parametrize("offline", [False, True], ids=["online", "offline"])
@@ -1110,7 +1105,7 @@ async def test_remove_erases_what_the_service_published_under_it(
     await client.raw.publish("/devices/dev/meta/name", "Dev", retain=True)
     await client.raw.publish("/devices/dev/meta/driver", "test-service", retain=True)
     await client.raw.publish("/devices/dev/controls/temp/meta/type", "value", retain=True)
-    seen = await watch_erasures(connect, "/devices/dev/#")
+    messages = await watch_messages(connect, "/devices/dev/#")
     if offline:
         await proxy.drop(client)
 
@@ -1118,8 +1113,8 @@ async def test_remove_erases_what_the_service_published_under_it(
 
     await proxy.restore(client)
     await wait_retained(broker.port, "/devices/dev/#", remaining)
-    await wait_until(lambda: len(seen) == len(erased))
-    assert seen == erased
+    await wait_until(lambda: len(get_erased_topics(messages)) == len(erased))
+    assert get_erased_topics(messages) == erased
 
 
 async def test_device_handler_gets_commands_of_all_controls_in_order(
@@ -1195,6 +1190,31 @@ async def test_own_change_returns_before_puback_while_the_window_has_room(
     await wait_retained(broker.port, last, {last: b"1"})
 
 
+async def test_paho_takes_the_whole_window_of_the_client(
+    connect: ConnectClient, dead_link: tuple[DeadLinkProxy, Client]
+) -> None:
+    """
+    30 values, more than the 20 paho sends at once by default, get their PUBACK 3 s late. paho sends them
+    all at once, so none of them waits in its queue past the 5 s deadline and none goes again.
+    """
+    proxy, client = dead_link
+    device = await client.create_device("dev")
+    controls = [await device.create_control(f"c{index}", ControlType.VALUE, value=0) for index in range(30)]
+    messages = await watch_messages(connect, "/devices/dev/controls/+")
+    await wait_until(lambda: len(messages) == 30)
+    messages.clear()
+
+    proxy.broker_delay = 3.0
+    for control in controls:
+        await wait_or_dump(control.set_value(1), timeout=1)
+    await asyncio.sleep(broker_connection.ACK_TIMEOUT_S + 1)
+
+    assert sorted(message.topic for message in messages) == sorted(
+        f"/devices/dev/controls/c{index}" for index in range(30)
+    )
+    proxy.broker_delay = 0.0
+
+
 async def test_own_change_right_before_close_reaches_the_broker(
     broker: MosquittoBroker, client: Client
 ) -> None:
@@ -1226,12 +1246,7 @@ async def test_unexpected_error_on_the_way_to_paho_reaches_the_caller_and_change
     temp.on_meta(lambda control: events.append("meta"))
     await wait_until(lambda: events == [("value", 1)])
 
-    async def fail(send: Send, topic: str, _payload: Any) -> None:
-        if topic.startswith("/devices/dev/controls/temp"):
-            raise RuntimeError("broken paho")
-        await send()
-
-    intercept_publish(monkeypatch, fail)
+    break_publish(monkeypatch, lambda topic, _payload: topic.startswith("/devices/dev/controls/temp"))
     with pytest.raises(RuntimeError):
         await temp.set_value(2)
     with pytest.raises(RuntimeError):
@@ -1297,10 +1312,7 @@ async def test_unexpected_error_of_a_command_or_a_press_reaches_the_caller_as_it
     presses: list = []
     button.on_value(lambda control, value, previous: presses.append(value))
 
-    async def fail(_send: Send, _topic: str, _payload: Any) -> None:
-        raise RuntimeError("broken paho")
-
-    intercept_publish(monkeypatch, fail)
+    break_publish(monkeypatch, lambda _topic, _payload: True)
     with pytest.raises(RuntimeError):
         await remote.set_value(5)
     with pytest.raises(RuntimeError):
@@ -1361,23 +1373,14 @@ async def test_create_control_that_fails_on_the_way_to_paho_is_taken_back(
     device = await client.create_device("dev")
     added: list = []
     device.on_control_added(added.append)
-    watcher = await connect("watcher")
-    seen: list[tuple[str, bytes]] = []
-    await watcher.raw.subscribe(
-        "/devices/dev/controls/temp/#", lambda message: seen.append((message.topic, message.payload))
-    )
+    messages = await watch_messages(connect, "/devices/dev/controls/temp/#")
 
-    async def fail_the_value(send: Send, topic: str, _payload: Any) -> None:
-        if topic == "/devices/dev/controls/temp":
-            raise RuntimeError("broken paho")
-        await send()
-
-    intercept_publish(monkeypatch, fail_the_value)
+    break_publish(monkeypatch, lambda topic, _payload: topic == "/devices/dev/controls/temp")
     with pytest.raises(RuntimeError):
         await device.create_control("temp", ControlType.VALUE, value=21)
 
     assert "temp" not in device.controls
-    await wait_until(lambda: ("/devices/dev/controls/temp/meta", b"") in seen)
+    await wait_until(lambda: "/devices/dev/controls/temp/meta" in get_erased_topics(messages))
     assert await read_retained(broker.port, "/devices/dev/controls/#") == {}
     assert not added
 
@@ -1399,22 +1402,15 @@ async def test_remove_that_fails_on_the_way_to_paho_is_taken_back(
     """
     device = await client.create_device("dev")
     temp = await device.create_control("temp", ControlType.VALUE, value=21, error=ControlErrorFlags.READ)
-    watcher = await connect("watcher")
-    values: list[bytes] = []
-    await watcher.raw.subscribe("/devices/dev/controls/temp", lambda message: values.append(message.payload))
-    await wait_until(lambda: values == [b"21"])
+    messages = await watch_messages(connect, "/devices/dev/controls/temp")
+    await wait_until(lambda: len(messages) == 1)
 
-    async def fail_the_error_erasure(send: Send, topic: str, payload: Any) -> None:
-        if topic.endswith("/meta/error") and not payload:
-            raise RuntimeError("broken paho")
-        await send()
-
-    intercept_publish(monkeypatch, fail_the_error_erasure)
+    break_publish(monkeypatch, lambda topic, payload: topic.endswith("/meta/error") and not payload)
     with pytest.raises(RuntimeError):
         await temp.remove()
 
     assert temp.exists and temp.value == 21 and temp.error == ControlErrorFlags.READ
-    await wait_until(lambda: values == [b"21", b"", b"21"])
+    await wait_until(lambda: [message.payload for message in messages] == [b"21", b"", b"21"])
     retained = await read_retained(broker.port, "/devices/dev/controls/temp/#")
     assert retained["/devices/dev/controls/temp"] == b"21"
     assert retained["/devices/dev/controls/temp/meta/error"] == b"r"

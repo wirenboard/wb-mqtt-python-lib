@@ -314,7 +314,7 @@ async def test_none_erases_the_own_value(
     of a reader gets None with the erased value in previous, erasing again is no event. The value does not
     come back after reconnect, a value set again goes out as usual.
     """
-    initial = {ControlType.VALUE: 5, ControlType.SWITCH: True, ControlType.TEXT: "on"}[control_type]
+    initial, _ = INITIAL[control_type]
     control = await (await client.create_device("dev")).create_control("c", control_type, value=initial)
     events: list = []
     control.on_value(lambda _control, value, previous: events.append((value, previous)))

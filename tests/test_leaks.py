@@ -35,7 +35,7 @@ ALLOWED_GROWTH = MEASURED_CYCLES // 10
 TIMER_TYPES = frozenset({"TimerHandle", "Context"})
 
 
-def live_objects() -> Counter:
+def get_live_objects() -> Counter:
     """
     Objects the garbage collector tracks, by type.
     """
@@ -57,11 +57,11 @@ async def object_growth(cycle: Callable[[int], Awaitable[None]]) -> dict[str, in
         for index in range(WARM_UP_CYCLES):
             await cycle(index)
         for window in range(2):
-            before = live_objects()
+            before = get_live_objects()
             start = WARM_UP_CYCLES + window * MEASURED_CYCLES
             for index in range(start, start + MEASURED_CYCLES):
                 await cycle(index)
-            after = live_objects()
+            after = get_live_objects()
             windows.append({name: after[name] - before[name] for name in after})
     finally:
         loop.set_debug(debug)
@@ -80,7 +80,7 @@ async def test_closed_client_is_garbage_collected(broker: MosquittoBroker) -> No
     tasks_before = len(asyncio.all_tasks())
     references = []
     for _ in range(5):
-        client = Client("test-service", broker.url())
+        client = Client("test-service", broker.get_url())
         await wait_or_dump(client.connect(), timeout=5)
         device = await client.create_device("dev")
         level = await device.create_control("level", ControlType.VALUE, value=0)

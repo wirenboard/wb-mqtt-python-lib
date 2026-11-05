@@ -346,7 +346,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
             payload = to_payload(control.meta, value)
             # The value is what the payload reads as, as a reader of the topic gets it
             kept_value = parse_value(control.meta, payload)
-            # A value is a successful read. As the convention says, r goes away first, then the value goes out.
+            # A value is a successful read. As the convention says, r goes first, then the value goes out.
             error &= ~ControlErrorFlags.READ
         messages: list[tuple[str, Optional[str]]] = []
         if error != control.error:

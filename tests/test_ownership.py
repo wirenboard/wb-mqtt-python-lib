@@ -353,7 +353,7 @@ async def test_create_device_ends_own_when_the_link_drops_while_its_leftovers_ar
     await leave_a_previous_run(connect)
     proxy = DeadLinkProxy(broker.port)
     await proxy.start()
-    client = Client("service", proxy.url())
+    client = Client("service", proxy.get_url())
     await wait_or_dump(client.connect(), timeout=5)
     try:
         attempt = asyncio.ensure_future(client.create_device("X"))
