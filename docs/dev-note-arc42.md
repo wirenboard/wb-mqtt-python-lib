@@ -397,14 +397,14 @@ client.create_device("dev")
 device.create_control("ctl", ...)
   → проверка имени и длины его топиков, типа, всех полей меты, начальной ошибки и значения
   → Publisher.put_retained одной пачкой, сначала мета, потом ошибка и значение
-  → State.mark_control_added, событие on_added, ошибка и значение в State
+  → ошибка и значение в запись контрола, потом State.mark_control_added, как у чужого, события on_added, on_error и on_value
 ```
 
 ### 6.5. Значение и команда
 
 ```
 своё, control.set_value(v)
-  → to_payload_and_value, проверка типа, строка для топика, значение для State читается из строки
+  → to_payload, проверка типа и строка для топика, значение для State читает из строки parse_value
   → Publisher.put_retained(wait_for_puback=False) при каждом вызове, QoS 1, тело в зеркало и в очередь
     сессии, при месте в окне сразу в paho, без связи только в зеркало. Если стоит r, кроме None,
     в том же вызове перед значением уходит ошибка без r
@@ -436,12 +436,12 @@ Publisher.publish, put_retained и put_erasure, общий Publisher._put
 
 чужое, control.set_value(v)
   → у контрола с readonly ReadonlyControlError, в /on ничего не уходит
-  → to_payload_and_value, команда в /on без retain, без связи BrokerDisconnectedError
+  → to_payload, команда в /on без retain, без связи BrokerDisconnectedError
 
 команда в /on своего контрола
   → retained-команда не исполняется, стирается пустым retained
   → если команда пустая, контрол с readonly или у контрола и устройства нет обработчика, она выбрасывается
-  → команду разбирает values.parse_value по типу контрола. Потом её проверяет to_payload_and_value,
+  → команду разбирает values.parse_value по типу контрола. Потом её проверяет to_payload,
     та же проверка, что у set_value. Если проверка не прошла, библиотека пишет WARNING и отбрасывает
     команду, так делает и wb-mqtt-serial
   → State.emit_command, очередь каждого обработчика on_command и on_control_command устройства
@@ -523,7 +523,7 @@ close()
 | длина топиков своего устройства и контрола | `checks.CheckedTopic` в `DeviceManager.create_device` и `create_control` | имя, с которым `/meta/error` устройства или контрола длиннее 65535 байт |
 | символы, которые брокер не примет | `checks.is_refused_by_broker` | C0, DEL, C1, суррогаты, нехарактеры Unicode. Правила те же, что у `mosquitto_validate_utf8` в брокере, своя реализация на Python |
 | поля меты своего контрола | `values.parse_meta_fields` | неизвестные поля, неверные типы, нечисловые и бесконечные `precision`, `minimum`, `maximum`, неположительный `precision`, неверные заголовок и enum, тексты без UTF-8 |
-| значение на запись | `values.to_payload_and_value` | тип не по контролу, целое вместо bool, NaN, бесконечность и целое больше float в числе, текст без UTF-8, пустая строка, `None` в команде чужому |
+| значение на запись | `values.to_payload` | тип не по контролу, целое вместо bool, NaN, бесконечность и целое больше float в числе, текст без UTF-8, пустая строка, `None` в команде чужому |
 | топик, фильтр, QoS, тело | `checks.check_topic`, `checks.check_filter`, `checks.check_qos`, `checks.check_payload` | маски не на своём месте, `$share/`, больше 200 косых, больше 65535 байт, символы из `is_refused_by_broker` |
 | адрес брокера | `broker_url.parse_broker_url` | схема не `unix`, `tcp`, `mqtt-tcp` или `ws`, нет хоста или порта, `?` или `#`, `unix://` с хостом, логин с символами из `is_refused_by_broker` |
 

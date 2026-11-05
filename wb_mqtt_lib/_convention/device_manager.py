@@ -52,7 +52,7 @@ from .values import (
     parse_device_meta,
     parse_meta_fields,
     parse_value,
-    to_payload_and_value,
+    to_payload,
     warn_if_converted_to_bool,
 )
 
@@ -282,12 +282,12 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
 
         # Initial error and value
         _check_error_flags(error)
-        payload, normalized_value = None, None
+        payload = None
         if value is not None:
             if control_type == ControlType.PUSHBUTTON:
                 # A press is an event, a button has no value to start with
                 raise TypeError(f"a pushbutton takes no initial value, got {value!r}")
-            payload, normalized_value = to_payload_and_value(meta, value)
+            payload = to_payload(meta, value)
 
         # Every check passed. Meta, error and value go out in this order, a reader that gets the value knows
         # of the error already.
@@ -298,16 +298,14 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
             messages.append((control_topics.value, payload))
         published = self._publisher.put_retained(messages)
 
-        # The control goes into the state
+        # The control goes into the state as a foreign one does, the error and the value wait in the record
+        # and reach the listeners with the meta
         device.next_order = max(device.next_order, meta.order + 1)
-        self.state.mark_control_added(device_name, control_name, meta)
-        control = device.controls[control_name]
+        control = self.state.ensure_control(device_name, control_name)
         control.topics = control_topics
-        if error:
-            self.state.set_control_error(device_name, control_name, error)
-        if payload is not None:
-            control.payload = payload
-            self.state.set_control_value(device_name, control_name, normalized_value)
+        control.error = error
+        control.payload = payload
+        self.state.mark_control_added(device_name, control_name, meta)
         await self._wait_for_broker(published)
 
     async def set_control_value(self, device_name: str, control_name: str, value: Any) -> None:
@@ -318,14 +316,14 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
         if not self.state.is_own_device(device_name):
             if control.meta.readonly:
                 raise ReadonlyControlError(f"{device_name}/{control_name} is readonly and takes no commands")
-            payload, _ = to_payload_and_value(control.meta, value)
+            payload = to_payload(control.meta, value)
             await self._publisher.publish(topics.control_command(device_name, control_name), payload)
             return
 
         # Own pushbutton, a press is an event and keeps no value. It becomes an event once the broker
         # confirmed it, also when the caller was cancelled meanwhile.
         if control.meta.control_type == ControlType.PUSHBUTTON:
-            payload, _ = to_payload_and_value(control.meta, value)
+            payload = to_payload(control.meta, value)
             generation = control.generation
 
             def emit_press(published: asyncio.Future) -> None:
@@ -343,10 +341,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
             return
 
         # Own control of another type, every call goes out and reaches on_value. None erases the value.
-        if value is None:
-            payload, normalized_value = None, None
-        else:
-            payload, normalized_value = to_payload_and_value(control.meta, value)
+        payload = None if value is None else to_payload(control.meta, value)
         # A value is a successful read. As the convention says, r goes away first, then the value goes out.
         error = control.error
         if value is not None:
@@ -359,7 +354,9 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
 
         control.payload = payload
         self.state.set_control_error(device_name, control_name, error)
-        self.state.set_control_value(device_name, control_name, normalized_value, notify_unchanged=True)
+        # The value is what the payload reads as, as a reader of the topic gets it
+        kept_value = None if payload is None else parse_value(control.meta, payload)
+        self.state.set_control_value(device_name, control_name, kept_value, notify_unchanged=True)
         await self._wait_for_broker(published)
 
     async def set_control_error(self, device_name: str, control_name: str, error: ControlErrorFlags) -> None:
@@ -541,7 +538,7 @@ class DeviceManager:  # pylint: disable=too-many-public-methods,too-many-instanc
             value = parse_value(control.meta, payload)
             warn_if_converted_to_bool(value, payload, f"{topic.device}/{topic.control}")
         try:
-            to_payload_and_value(control.meta, value)
+            to_payload(control.meta, value)
         except TypeError:
             logger.warning(
                 "Command %r to %s/%s does not fit the type %s, skipped",

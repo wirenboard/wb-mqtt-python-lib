@@ -458,14 +458,14 @@ class DeviceSnapshot:
 # ------------------------------------------------------------
 
 
-def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
+def to_payload(meta: ControlMeta, value: Any) -> str:
     """
-    Value of the service turned into the string for the topic and the value the own control keeps.
+    Value of the service turned into the string for the topic. The own control keeps what parse_value reads
+    from it, as a reader of the topic gets it.
 
     switch, alarm and wo-switch take bool, pushbutton takes True. value and range take a finite number,
-    rounded by precision in the string and in the value. local_time and w1-id take an int. rgb takes three
-    ints from 0 to 255 and keeps them as a tuple. text and an unknown type of a foreign control take
-    a non-empty str valid in UTF-8.
+    rounded by precision. local_time and w1-id take an int. rgb takes three ints from 0 to 255. text and
+    an unknown type of a foreign control take a non-empty str valid in UTF-8.
 
     Raises:
         TypeError: the value does not fit the control type.
@@ -474,24 +474,22 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
     if control_type in _BOOLEAN_TYPES:
         if not isinstance(value, bool):
             raise TypeError(f"{control_type} control takes True or False, got {value!r}")
-        return ("1" if value else "0"), value
+        return "1" if value else "0"
 
     if control_type == ControlType.PUSHBUTTON:
         if value is not True:
             raise TypeError("a pushbutton press is set_value(True)")
-        return "1", True
+        return "1"
 
     if control_type in _NUMBER_TYPES:
         if not _is_number(value) or not _is_finite(value):
             raise TypeError(f"{control_type} control takes a finite number, got {value!r}")
-        # The own value is the number the payload reads as, as a reader gets it
-        payload = _format_number(value, meta.precision)
-        return payload, _parse_number(payload)
+        return _format_number(value, meta.precision)
 
     if control_type in _INTEGER_TYPES:
         if not is_int(value):
             raise TypeError(f"{control_type} control takes an int, got {value!r}")
-        return str(value), value
+        return str(value)
 
     if control_type == ControlType.RGB:
         if (
@@ -500,14 +498,13 @@ def to_payload_and_value(meta: ControlMeta, value: Any) -> tuple[str, Any]:
             or not all(is_int(part) and 0 <= part <= 255 for part in value)
         ):
             raise TypeError(f"rgb control takes three ints from 0 to 255, got {value!r}")
-        normalized = tuple(value)
-        return ";".join(str(part) for part in normalized), normalized
+        return ";".join(str(part) for part in value)
 
     # text and every other type. An empty payload in MQTT means no value and erases a retained topic,
     # so an empty str cannot be a value.
     if not is_utf8_text(value) or not value:
         raise TypeError(f"{control_type} control takes a non-empty str valid in UTF-8, got {value!r}")
-    return value, value
+    return value
 
 
 def warn_if_converted_to_bool(value: Any, payload: str, address: str) -> None:
