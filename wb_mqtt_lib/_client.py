@@ -380,7 +380,8 @@ class Client:  # pylint: disable=too-many-instance-attributes
             except broker_connection.LinkError as error:
                 if isinstance(error, broker_connection.LoginRejected) and not connected_once:
                     self._fatal_error = LoginRejectedError(str(error))
-                    logger.error("MQTT login rejected: %s", error)
+                    # The service gets LoginRejectedError from connect() and logs it itself
+                    logger.debug("MQTT login rejected: %s", error)
                     return
                 if self._stop_requested.is_set():
                     # close() is under way and no reconnect follows. On a dead link DISCONNECT gets no answer.
