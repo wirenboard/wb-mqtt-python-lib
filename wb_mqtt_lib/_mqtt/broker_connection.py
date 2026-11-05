@@ -36,9 +36,8 @@ TopicMatcher = MQTTMatcher
 KEEPALIVE_S = 15
 # Deadline for a broker acknowledgement
 ACK_TIMEOUT_S = 5.0
-# Publications waiting for PUBACK at once, max_inflight_messages of the broker in
-# /usr/share/wb-configs/mosquitto/30limits.conf, see the module docstring
-SEND_WINDOW = 1000
+# Publications waiting for PUBACK at once, see the module docstring
+SEND_WINDOW = 100
 # Every handler publishes on its own, a burst easily has dozens of publications waiting for the broker,
 # and aiomqtt warns about each one above this number
 PENDING_CALLS_WARNING = 10_000

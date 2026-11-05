@@ -100,7 +100,7 @@ def get_control_object(client: Any, full_name: str) -> Any:
 # Hands the packet to paho and waits for PUBACK, as aiomqtt.Client.publish does
 Send = Callable[[], Awaitable[None]]
 
-# Send window of the tests that fill it, 20 controls fill it instead of the 1000 of the client
+# Send window of the tests that fill it, smaller than the one of the client so that a few controls fill it
 TEST_SEND_WINDOW = 20
 
 
