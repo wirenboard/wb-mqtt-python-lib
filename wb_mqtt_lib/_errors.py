@@ -1,5 +1,6 @@
 """
-Errors the library raises. aiomqtt errors never reach the service.
+Errors the library raises. Link errors of aiomqtt reach the service as BrokerDisconnectedError
+and LoginRejectedError.
 """
 
 

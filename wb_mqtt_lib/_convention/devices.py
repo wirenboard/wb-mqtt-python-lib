@@ -127,7 +127,7 @@ class Control:  # pylint: disable=too-many-public-methods
         handler(control, value, previous) on every set_value of an own control and every value a foreign
         driver publishes, also the same one, for pushbutton on every press. The same value sent again
         on resubscription after reconnect is no event. An erased value comes as None with the erased one
-        in previous.
+        in previous, erasing no value is no event.
 
         Called at once with previous=None when the value is known already. A new type of a foreign control
         reads the kept payload again and changes value without this event, only on_meta comes.
@@ -217,8 +217,8 @@ class Control:  # pylint: disable=too-many-public-methods
             BrokerDisconnectedError: a command or a pushbutton press while the broker link is down,
                 or the link is lost or the broker does not confirm it in 5 s.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The value
-                of an own control stays as it was, and a press is no event.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. The value of an own control stays as it was, and a press is no event.
         """
         await self._device_manager.set_control_value(self.device.name, self.name, value)
 
@@ -232,8 +232,8 @@ class Control:  # pylint: disable=too-many-public-methods
             NotOwnError: the control is foreign.
             ControlMissingError: the control or its device does not exist.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The error
-                stays as it was.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. The error stays as it was.
         """
         await self._device_manager.set_control_error(self.device.name, self.name, error)
 
@@ -251,8 +251,8 @@ class Control:  # pylint: disable=too-many-public-methods
             NotOwnError: the control is foreign.
             ControlMissingError: the control or its device does not exist.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The meta
-                stays as it was.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. The meta stays as it was.
         """
         await self._device_manager.update_control_meta(self.device.name, self.name, **fields)
 
@@ -267,8 +267,8 @@ class Control:  # pylint: disable=too-many-public-methods
         Raises:
             NotOwnError: the control is foreign.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. Nothing
-                changes, what went out already is taken back.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. Nothing changes, what went out already is taken back.
         """
         await self._device_manager.remove_control(self.device.name, self.name)
 
@@ -476,7 +476,7 @@ class Device:  # pylint: disable=too-many-public-methods
             maximum: upper limit of range and value.
             minimum: lower limit of range and value.
             precision: step of a number, a positive number. The MQTT payload keeps as many decimals as
-                precision has, as in wb-rules, control.value and events keep the accepted number. homeui
+                precision has, as in wb-rules, control.value and events get the same rounded number. homeui
                 uses it as the step of the input.
             readonly: True when the control takes no commands.
             units: units of value and range.
@@ -494,8 +494,8 @@ class Device:  # pylint: disable=too-many-public-methods
             NotOwnError: the device is foreign.
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. Nothing
-                changes, what went out already is taken back.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. Nothing changes, what went out already is taken back.
         """
         await self._device_manager.create_control(
             self.name,
@@ -525,8 +525,8 @@ class Device:  # pylint: disable=too-many-public-methods
             NotOwnError: the device is foreign.
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The error
-                stays as it was.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. The error stays as it was.
         """
         await self._device_manager.set_device_error(self.name, error)
 
@@ -536,12 +536,12 @@ class Device:  # pylint: disable=too-many-public-methods
         or after 5 s without confirmation, then the meta goes again.
 
         Raises:
-            TypeError: the title is not a string or a mapping.
+            TypeError: the title is not a string or a {"en": ..., "ru": ...} mapping.
             NotOwnError: the device is foreign.
             ControlMissingError: the device is removed.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. The meta
-                stays as it was.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. The meta stays as it was.
         """
         await self._device_manager.update_device_meta(self.name, title)
 
@@ -558,8 +558,8 @@ class Device:  # pylint: disable=too-many-public-methods
         Raises:
             NotOwnError: the device is foreign.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. Nothing
-                changes, what went out already is taken back.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. Nothing changes, what went out already is taken back.
         """
         await self._device_manager.remove_device(self.name)
 

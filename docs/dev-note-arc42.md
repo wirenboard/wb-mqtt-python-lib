@@ -535,7 +535,7 @@ close()
 
 ### 8.2. Ошибки и лог
 
-Исключения библиотеки наследуют `MqttLibError`. `DeviceTakenError`, `AlreadyCreatedError` и `InvalidNameError` наследуют ещё и `ValueError`, как `InvalidURL` в requests, поэтому их ловит и `except ValueError`. Остальные неверные аргументы, это топики, QoS, поля меты и адрес брокера, дают обычный `ValueError`, как у paho и aiomqtt. Ошибки aiomqtt наружу не выходят. `broker_connection.py` переводит их в `LinkLost` и `AckTimeout`, а `Subscriber`, `Publisher` и цикл сессий дальше в `BrokerDisconnectedError` и `LoginRejectedError`.
+Исключения библиотеки наследуют `MqttLibError`. `DeviceTakenError`, `AlreadyCreatedError` и `InvalidNameError` наследуют ещё и `ValueError`, как `InvalidURL` в requests, поэтому их ловит и `except ValueError`. Остальные неверные аргументы, это топики, QoS, поля меты и адрес брокера, дают обычный `ValueError`, как у paho и aiomqtt. Ошибки связи aiomqtt наружу не выходят. `broker_connection.py` переводит их в `LinkLost` и `AckTimeout`, а `Subscriber`, `Publisher` и цикл сессий дальше в `BrokerDisconnectedError` и `LoginRejectedError`. Другие ошибки paho и aiomqtt при отправке вызов бросает как есть, раздел 6.5.
 
 | Что | Уровень |
 | --- | --- |

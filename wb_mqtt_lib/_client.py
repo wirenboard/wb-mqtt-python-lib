@@ -262,8 +262,8 @@ class Client:  # pylint: disable=too-many-instance-attributes
                 and force is False.
             BrokerDisconnectedError: no broker link to check the name.
             ClientClosedError: the client is closed or closes while waiting.
-            Exception: an unexpected error of paho or aiomqtt on the way to the broker, as it is. Nothing
-                changes, what went out already is taken back.
+            Exception: an unexpected error of paho or aiomqtt while the call hands its messages to paho,
+                as it is. Nothing changes, what went out already is taken back.
         """
         await self._device_manager.create_device(name, title, force)
         return self._make_device(name)
