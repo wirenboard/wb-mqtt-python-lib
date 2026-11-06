@@ -13,9 +13,9 @@ from enum import Flag, StrEnum, auto
 from types import MappingProxyType
 from typing import Any, Literal, Mapping, Optional, TypedDict, Union
 
-from .._errors import InvalidNameError
-from .._logs import get_logger
-from .._mqtt.checks import is_int, is_refused_by_broker, is_utf8_text
+from wb_mqtt_lib._errors import InvalidNameError
+from wb_mqtt_lib._logs import get_logger
+from wb_mqtt_lib._mqtt.checks import is_int, is_refused_by_broker, is_utf8_text
 
 logger = get_logger(__name__)
 

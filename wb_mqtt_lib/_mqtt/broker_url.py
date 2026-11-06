@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Literal, Optional
 from urllib.parse import unquote, urlparse
 
-from .checks import is_refused_by_broker, is_utf8_text
+from wb_mqtt_lib._mqtt.checks import is_refused_by_broker, is_utf8_text
 
 DEFAULT_BROKER_URL = "unix:///var/run/mosquitto/mosquitto.sock"
 

@@ -8,8 +8,8 @@ import inspect
 import weakref
 from typing import Any, Awaitable, Callable, Iterable, Optional, Protocol, Union
 
-from ._logs import get_logger, log_failure
-from ._tasks import is_cancelled_from_outside
+from wb_mqtt_lib._logs import get_logger, log_failure
+from wb_mqtt_lib._tasks import is_cancelled_from_outside
 
 logger = get_logger(__name__)
 
