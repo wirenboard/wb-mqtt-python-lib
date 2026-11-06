@@ -6,8 +6,8 @@ import asyncio
 from dataclasses import dataclass, field
 from typing import Callable
 
-from .._errors import BrokerDisconnectedError, ClientClosedError
-from .._listeners import (
+from wb_mqtt_lib._errors import BrokerDisconnectedError, ClientClosedError
+from wb_mqtt_lib._listeners import (
     Handler,
     Listener,
     ListenerRegistry,
@@ -15,9 +15,9 @@ from .._listeners import (
     check_handler_arguments,
     get_handler_name,
 )
-from .checks import Payload
-from .publisher import PUBLICATION_QOS, Publisher
-from .subscriber import SUBSCRIPTION_QOS, Subscriber
+from wb_mqtt_lib._mqtt.checks import Payload
+from wb_mqtt_lib._mqtt.publisher import PUBLICATION_QOS, Publisher
+from wb_mqtt_lib._mqtt.subscriber import SUBSCRIPTION_QOS, Subscriber
 
 
 @dataclass(eq=False)

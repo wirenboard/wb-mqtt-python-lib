@@ -12,10 +12,10 @@ from collections import deque
 from dataclasses import dataclass
 from typing import NamedTuple, Optional, Sequence
 
-from .._errors import BrokerDisconnectedError, ClientClosedError
-from .._logs import get_logger
-from .._tasks import retrieve_error
-from . import broker_connection, checks
+from wb_mqtt_lib._errors import BrokerDisconnectedError, ClientClosedError
+from wb_mqtt_lib._logs import get_logger
+from wb_mqtt_lib._mqtt import broker_connection, checks
+from wb_mqtt_lib._tasks import retrieve_error
 
 logger = get_logger(__name__)
 

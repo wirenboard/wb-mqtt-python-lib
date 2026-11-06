@@ -8,22 +8,27 @@ are compared with ==, not with is. Only the client builds them.
 
 from typing import Any, Mapping, Optional, Unpack
 
-from .._listeners import (
-    ChangeHandler,
-    CommandHandler,
-    ControlHandler,
-    DeviceHandler,
-    Handler,
+from wb_mqtt_lib._convention.device_manager import DeviceManager
+from wb_mqtt_lib._convention.state import (
+    ControlEvent,
+    ControlRecord,
+    DeviceEvent,
+    DeviceRecord,
 )
-from .device_manager import DeviceManager
-from .state import ControlEvent, ControlRecord, DeviceEvent, DeviceRecord
-from .values import (
+from wb_mqtt_lib._convention.values import (
     ControlErrorFlags,
     ControlMeta,
     ControlMetaFields,
     ControlType,
     DeviceMeta,
     TitleLike,
+)
+from wb_mqtt_lib._listeners import (
+    ChangeHandler,
+    CommandHandler,
+    ControlHandler,
+    DeviceHandler,
+    Handler,
 )
 
 # Meta of a control or a device that does not exist, every field empty

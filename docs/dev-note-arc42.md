@@ -69,12 +69,12 @@
 
 - Кодстайл WB из [wirenboard/codestyle](https://github.com/wirenboard/codestyle), black с длиной строки 110, isort, pylint по его конфигу
 - Аннотации типов везде. Докстринги многострочные, аргументы, результат и исключения описаны в разделах `Args`, `Returns` и `Raises`, как принято в стиле Google
-- Внутри `wb_mqtt_lib/` только относительные импорты, раздел 7
+- Импорты внутри пакета абсолютные, от `wb_mqtt_lib`
 
 ### 2.3. Организационные
 
-- Библиотека попадает в сервис git-сабмодулем внутрь его пакета, раздел 7
-- CI на GitHub Actions в контейнере `debian:trixie`, тесты и линтеры. Jenkins и deb-пакета у библиотеки нет
+- Библиотека попадает в сервис deb-пакетом `python3-wb-mqtt-lib`, раздел 7
+- CI в Jenkins. Он собирает deb-пакет на trixie, тесты идут внутри сборки, а линтеры и lintian отдельными стадиями
 
 ---
 
@@ -163,7 +163,8 @@ wb_mqtt_lib/
     └── devices.py           # Device и Control, публичные объекты по имени
 
 tests/                       # тесты, каждый поднимает свой mosquitto, описаны в tests/README.md
-.github/workflows/           # CI на GitHub Actions
+debian/, setup.py            # deb-пакет python3-wb-mqtt-lib, версия из debian/changelog
+Jenkinsfile                  # сборка пакета и проверки в Jenkins
 ```
 
 ### 4.1. Одно соединение и новый клиент aiomqtt на каждую сессию
@@ -487,25 +488,16 @@ close()
 
 ```
 репозиторий сервиса
-├── wb-mqtt-python-lib/            сабмодуль на конкретном коммите
-│   └── wb_mqtt_lib/
-├── wb/mqtt_example/               пакет сервиса
-└── setup.py                       package_dir от wb.mqtt_example.wb_mqtt_lib к wb-mqtt-python-lib/wb_mqtt_lib
+└── debian/control                 Depends: python3-wb-mqtt-lib
 
 контроллер
-└── /usr/lib/python3/dist-packages/wb/mqtt_example/wb_mqtt_lib/   копия библиотеки внутри пакета сервиса
+└── /usr/lib/python3/dist-packages/wb_mqtt_lib/   одна копия из пакета python3-wb-mqtt-lib на все сервисы
 ```
 
-- Пока API в версии 0.x, библиотека поставляется сабмодулем
-- У каждого сервиса своя копия библиотеки внутри его пакета, и сервисы на разных версиях не конфликтуют за файлы в `dist-packages`
-- Зависимость `python3-asyncio-mqtt` сервис пишет в свой `debian/control` сам
-- `setup.py` сервиса берёт и подпакеты библиотеки `_mqtt` и `_convention`, пример в README
-- Новая версия библиотеки приходит в сервис только бампом сабмодуля
-- Переход на deb-пакет потом сводится к `debian/` и Jenkinsfile
-
-Из-за копии внутри пакета сервиса в самой библиотеке только относительные импорты. Абсолютный импорт `wb_mqtt_lib` сломал бы эту схему. Без системной копии сервис упадёт на старте, а при её наличии молча возьмёт часть чужого кода.
-
-Библиотеку проверяет её собственный CI. Чтобы Jenkins не проверял её линтерами сервиса, в `Jenkinsfile` сервиса добавляют `defaultPythonChecksExcludes: 'wb-mqtt-python-lib'`.
+- Jenkins собирает пакет из каждой ветки и PR. Версия сборки из ветки получает суффикс `~exp~`, сборка из `main` попадает в канал unstable
+- Пока API меняется, версии альфа, например `0.1.0~alpha1`. `setup.py` отдаёт в метаданные Python версию без части после `~`, потому что PEP 440 тильду не принимает
+- Тестам при сборке нужен mosquitto, он стоит в `Build-Depends` с профилем `<!nocheck>`
+- `python3-asyncio-mqtt` приходит зависимостью пакета, а сервис пишет в `Depends` только `python3-wb-mqtt-lib`
 
 Подключение к брокеру по умолчанию идёт через unix-сокет `/var/run/mosquitto/mosquitto.sock`, причина в разделе 4.10. Адреса `tcp://` и `ws://` нужны для внешнего брокера и для тестов, `mqtt-tcp://` принимается как `tcp://` ради адресов из конфигов на wb-common. Путь из `ws://` это путь websocket на сервере брокера, без него клиент берёт `/mqtt`, как paho.
 
@@ -548,7 +540,7 @@ close()
 | раздача одного сообщения дольше 0,1 с | WARNING |
 | служебные подробности вроде пропущенной команды | DEBUG |
 
-Логгеры называются по модулям без подчёркиваний внутренних пакетов, их даёт `_logs.get_logger`. Внутри пакета сервиса это, например, `wb.mqtt_example.wb_mqtt_lib.client` и `wb.mqtt_example.wb_mqtt_lib.mqtt.subscriber`, логи aiomqtt и paho идут в `wb.mqtt_example.wb_mqtt_lib.mqtt.broker_connection.aiomqtt`.
+Логгеры называются по модулям без подчёркиваний внутренних пакетов, их даёт `_logs.get_logger`, например `wb_mqtt_lib.client` и `wb_mqtt_lib.mqtt.subscriber`. Логи aiomqtt и paho идут в `wb_mqtt_lib.mqtt.broker_connection.aiomqtt`.
 
 ### 8.3. Конкурентность, отмена и close()
 

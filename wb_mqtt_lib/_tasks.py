@@ -6,7 +6,7 @@ import asyncio
 import logging
 from typing import Any, Coroutine, Iterable, Optional
 
-from ._logs import log_failure
+from wb_mqtt_lib._logs import log_failure
 
 
 def is_cancelled_from_outside() -> bool:

@@ -25,9 +25,9 @@ from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.properties import Properties
 from paho.mqtt.subscribeoptions import SubscribeOptions
 
-from .._logs import get_logger
-from .broker_url import BrokerAddress
-from .checks import Payload
+from wb_mqtt_lib._logs import get_logger
+from wb_mqtt_lib._mqtt.broker_url import BrokerAddress
+from wb_mqtt_lib._mqtt.checks import Payload
 
 # Matches topics against the filters of the subscriptions
 TopicMatcher = MQTTMatcher

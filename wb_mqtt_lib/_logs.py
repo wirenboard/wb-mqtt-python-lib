@@ -4,7 +4,11 @@ Loggers of the library modules and how failures of service code are logged.
 
 import logging
 
-from ._errors import BrokerDisconnectedError, ControlMissingError, ReadonlyControlError
+from wb_mqtt_lib._errors import (
+    BrokerDisconnectedError,
+    ControlMissingError,
+    ReadonlyControlError,
+)
 
 # Normal operation while the broker or a driver restarts, or when a driver makes a control readonly.
 # Not a bug in the service
@@ -15,7 +19,7 @@ def get_logger(module_name: str) -> logging.Logger:
     """
     Logger of a library module, named by its path without the underscores of the internal packages.
 
-    wb.<service>.wb_mqtt_lib._mqtt.subscriber logs as wb.<service>.wb_mqtt_lib.mqtt.subscriber.
+    wb_mqtt_lib._mqtt.subscriber logs as wb_mqtt_lib.mqtt.subscriber.
     """
     return logging.getLogger(module_name.replace("._", "."))
 

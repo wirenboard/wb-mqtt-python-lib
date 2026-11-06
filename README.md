@@ -56,7 +56,7 @@ import logging
 import signal
 from typing import Any
 
-from wb.mqtt_load_alarm.wb_mqtt_lib import (
+from wb_mqtt_lib import (
     BrokerDisconnectedError,
     Client,
     Control,
@@ -154,56 +154,20 @@ if __name__ == "__main__":
 
 ## Подключение к сервису
 
-Библиотека работает на Python 3.13 с [aiomqtt](https://github.com/empicano/aiomqtt) 2.x и на контроллерах Wiren Board с Debian trixie.
+Библиотека работает на Python 3.13 с [aiomqtt](https://github.com/empicano/aiomqtt) 2.x и на контроллерах Wiren Board с Debian trixie. Она поставляется пакетом `python3-wb-mqtt-lib`, который собирается из ветки `main` и появляется в канале unstable репозитория Wiren Board. Пока у пакета альфа-версии, например `0.1.0~alpha1`, и API между ними может меняться.
 
-Добавьте библиотеку git-сабмодулем в корень репозитория сервиса. При установке сервиса она попадёт внутрь его пакета, например в `wb.mqtt_example.wb_mqtt_lib`.
+Добавьте пакет в `Depends` в `debian/control` сервиса. Если тесты сервиса при сборке импортируют библиотеку, добавьте его и в `Build-Depends`.
 
-```bash
-# Добавить библиотеку сабмодулем
-git submodule add https://github.com/wirenboard/wb-mqtt-python-lib.git wb-mqtt-python-lib
-# Закрепить нужную версию библиотеки
-git -C wb-mqtt-python-lib checkout <коммит>
-# В коммит сервиса попадает файл .gitmodules и хэш сабмодуля
-git add .gitmodules wb-mqtt-python-lib
+```
+Depends: ${python3:Depends},
+         ${misc:Depends},
+         python3-wb-mqtt-lib (>= 0.1.0~alpha1)
 ```
 
-В `setup.py` сервиса добавьте пакет библиотеки и его подпакеты к пакетам сервиса.
+Сервис импортирует библиотеку из `wb_mqtt_lib`.
 
 ```python
-from setuptools import find_namespace_packages, find_packages, setup
-
-LIB_PACKAGE = "wb.mqtt_example.wb_mqtt_lib"
-LIB_DIR = "wb-mqtt-python-lib/wb_mqtt_lib"
-
-setup(
-    name="wb-mqtt-example",
-    packages=find_namespace_packages(include=["wb.*"])
-    + [LIB_PACKAGE]
-    + [f"{LIB_PACKAGE}.{name}" for name in find_packages(LIB_DIR)],
-    package_dir={LIB_PACKAGE: LIB_DIR},
-)
-```
-
-Сервис импортирует библиотеку из своего пакета.
-
-```python
-from wb.mqtt_example.wb_mqtt_lib import Client, ControlType
-```
-
-Что ещё нужно в репозитории сервиса:
-
-- Добавьте `python3-asyncio-mqtt (>= 2.3.1)` в `Depends` в `debian/control`. Сабмодуль сам свои зависимости не приносит. Если тесты сервиса при сборке импортируют библиотеку, добавьте этот пакет и в `Build-Depends`.
-- Клонируйте репозиторий сервиса с `--recurse-submodules` или после клонирования выполните `git submodule update --init`.
-
-Новая версия библиотеки попадает в сервис, только когда вы обновите сабмодуль.
-
-```bash
-# Забрать новые коммиты библиотеки
-git -C wb-mqtt-python-lib fetch
-# Перейти на нужный коммит
-git -C wb-mqtt-python-lib checkout <коммит>
-# В PR сервиса будет видна только смена хэша
-git add wb-mqtt-python-lib
+from wb_mqtt_lib import Client, ControlType
 ```
 
 ## Клиент
@@ -389,7 +353,7 @@ await cold.set_value(12.3456)  # уйдёт как «12.346»
 
 ### Запись значения
 
-`control.set_value(value)` проверяет значение по типу контрола. Какие значения принимает каждый тип, показано в разделе [Значения по типам контрола](#значения-по-типам-контрола). `set_value` своего контрола при каждом вызове публикует значение и вызывает `on_value`, даже если значение не изменилось. Нажатие `pushbutton` тоже публикуется каждый раз. Не записывайте значение из `on_value` в тот же контрол, иначе обработчик будет постоянно вызывать себя. Для чужого контрола `set_value` отправляет команду в `/on`.
+`control.set_value(value)` проверяет значение по типу контрола. Какие значения принимает каждый тип, показано в разделе [Значения по типам контрола](#значения-по-типам-контрола). `set_value` своего контрола при каждом вызове публикует значение в MQTT и вызывает `on_value`, даже если значение не изменилось. Нажатие `pushbutton` тоже публикуется каждый раз. Не записывайте значение из `on_value` в тот же контрол, иначе обработчик будет постоянно вызывать себя. Для чужого контрола `set_value` отправляет команду в `/on`.
 
 `set_value(None)` стирает значение своего контрола любого типа, кроме `pushbutton`. Библиотека публикует пустое retained-сообщение, `control.value` становится `None`, а `on_value` получает `None` и прошлое значение в `previous`. Если значения не было, обработчик не вызывается. В MQTT такое сообщение стирает топик, поэтому пустую строку в значении сохранить нельзя. Пустую строку `set_value` не принимает, а у контрола без значения, своего или чужого, `value` равно `None`.
 
@@ -555,7 +519,7 @@ async def add(connection: Connection) -> None:
 | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------- |
 | `on_added`   | у контрола появилась мета с типом                                                                                                            | `control`                  |
 | `on_removed` | мета контрола стёрта                                                                                                                         | `control`                  |
-| `on_value`   | у своего контрола каждый `set_value`, у чужого каждое значение от драйвера, у `pushbutton` каждое нажатие                                    | `control, value, previous` |
+| `on_value`   | у своего контрола каждый `set_value`, у чужого каждое значение от драйвера, даже повторное, у `pushbutton` каждое нажатие                    | `control, value, previous` |
 | `on_error`   | ошибка изменилась                                                                                                                            | `control, error, previous` |
 | `on_meta`    | изменилось поле меты, например заголовок, `readonly` или тип. При смене типа `value` перечитывается по новому типу, а `on_value` не приходит | `control`                  |
 | `on_command` | пришла команда в `/on`, только у своего контрола без `readonly`                                                                              | `control, value`           |
@@ -735,9 +699,9 @@ async def scan(client: Client, seconds: int) -> Any:
 
 Библиотека пишет в стандартный `logging`, вывод настраивает сервис. Свои уровни библиотека не задаёт, поэтому её логи идут на том же уровне, что и логи сервиса. Обрыв связи клиент пишет одной строкой WARNING, подробности работы идут на уровне DEBUG.
 
-Чтобы задать уровень для всей библиотеки отдельно от сервиса, настройте один логгер `wb.<сервис>.wb_mqtt_lib`, остальные логгеры библиотеки дочерние. Например, так включается DEBUG только для библиотеки при общем уровне INFO.
+Чтобы задать уровень для всей библиотеки отдельно от сервиса, настройте её логгер `wb_mqtt_lib`, остальные логгеры библиотеки дочерние. Например, так включается DEBUG только для библиотеки при общем уровне INFO.
 
 ```python
 logging.basicConfig(level=logging.INFO)
-logging.getLogger("wb.mqtt_example.wb_mqtt_lib").setLevel(logging.DEBUG)
+logging.getLogger("wb_mqtt_lib").setLevel(logging.DEBUG)
 ```

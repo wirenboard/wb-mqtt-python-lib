@@ -1,0 +1,25 @@
+Source: wb-mqtt-python-lib
+Maintainer: Wiren Board team <info@wirenboard.com>
+Section: python
+Priority: optional
+Standards-Version: 4.5.1
+Build-Depends: debhelper-compat (= 13),
+               dh-python,
+               python3-all,
+               python3-setuptools,
+               mosquitto <!nocheck>,
+               python3-asyncio-mqtt (>= 2.3.1) <!nocheck>,
+               python3-pytest <!nocheck>,
+               python3-pytest-asyncio <!nocheck>,
+               python3-pytest-timeout <!nocheck>
+Homepage: https://github.com/wirenboard/wb-mqtt-python-lib
+
+Package: python3-wb-mqtt-lib
+Architecture: all
+Depends: ${python3:Depends},
+         ${misc:Depends},
+         python3-asyncio-mqtt (>= 2.3.1)
+Description: Python library for MQTT and the Wiren Board convention
+ Asyncio library for Wiren Board services. It connects to the MQTT broker,
+ publishes the service's devices by the Wiren Board MQTT convention, reads
+ devices of other drivers and works with topics outside the convention.

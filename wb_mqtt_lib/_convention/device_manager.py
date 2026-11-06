@@ -11,25 +11,8 @@ import dataclasses
 import enum
 from typing import Any, Callable, Iterable, Optional, Unpack
 
-from .._errors import (
-    AlreadyCreatedError,
-    BrokerDisconnectedError,
-    ClientClosedError,
-    ControlMissingError,
-    DeviceTakenError,
-    InvalidNameError,
-    NotOwnError,
-    ReadonlyControlError,
-)
-from .._listeners import Handler, ListenerRegistry
-from .._logs import get_logger
-from .._mqtt import checks
-from .._mqtt.broker_connection import Message
-from .._mqtt.publisher import Publisher
-from .._mqtt.subscriber import Subscriber
-from .._tasks import TaskSet, is_cancelled_from_outside, retrieve_error
-from . import topics
-from .state import (
+from wb_mqtt_lib._convention import topics
+from wb_mqtt_lib._convention.state import (
     ControlEvent,
     ControlRecord,
     DeviceEvent,
@@ -37,7 +20,7 @@ from .state import (
     Ownership,
     State,
 )
-from .values import (
+from wb_mqtt_lib._convention.values import (
     ControlErrorFlags,
     ControlMeta,
     ControlMetaFields,
@@ -55,6 +38,23 @@ from .values import (
     to_payload,
     warn_if_converted_to_bool,
 )
+from wb_mqtt_lib._errors import (
+    AlreadyCreatedError,
+    BrokerDisconnectedError,
+    ClientClosedError,
+    ControlMissingError,
+    DeviceTakenError,
+    InvalidNameError,
+    NotOwnError,
+    ReadonlyControlError,
+)
+from wb_mqtt_lib._listeners import Handler, ListenerRegistry
+from wb_mqtt_lib._logs import get_logger
+from wb_mqtt_lib._mqtt import checks
+from wb_mqtt_lib._mqtt.broker_connection import Message
+from wb_mqtt_lib._mqtt.publisher import Publisher
+from wb_mqtt_lib._mqtt.subscriber import Subscriber
+from wb_mqtt_lib._tasks import TaskSet, is_cancelled_from_outside, retrieve_error
 
 logger = get_logger(__name__)
 
